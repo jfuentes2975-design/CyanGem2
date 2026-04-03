@@ -15,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import com.cyangem.ui.VoiceState
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -34,6 +35,7 @@ fun ChatScreen(vm: MainViewModel) {
     val scope = rememberCoroutineScope()
     var inputText by remember { mutableStateOf("") }
     val focusRequester = remember { FocusRequester() }
+    val voiceState = uiState.voiceState
 
     // Auto-scroll to bottom on new messages
     LaunchedEffect(uiState.chatMessages.size, uiState.streamingText) {
@@ -98,7 +100,7 @@ fun ChatScreen(vm: MainViewModel) {
             }
         }
 
-        // Photo analyze shortcut
+        // Voice + Quick action bar
         AnimatedVisibility(
             visible = uiState.hasApiKey,
             enter = slideInVertically { it } + fadeIn()
@@ -107,11 +109,29 @@ fun ChatScreen(vm: MainViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
             ) {
+                // Mic button
+                val isListening = uiState.isListening
+                FloatingActionButton(
+                    onClick = {
+                        if (isListening) vm.stopVoiceQuery()
+                        else vm.startVoiceQuery()
+                    },
+                    modifier = Modifier.size(44.dp),
+                    containerColor = if (isListening) ErrorColor else CyanPrimary,
+                    contentColor = androidx.compose.ui.graphics.Color(0xFF003731)
+                ) {
+                    Icon(
+                        if (isListening) Icons.Default.MicOff else Icons.Default.Mic,
+                        contentDescription = "Voice",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
                 QuickActionChip(
-                    label = "📷 Analyze glasses photo",
-                    onClick = { vm.analyzeLatestGlassesPhoto() },
+                    label = "📷 What am I looking at?",
+                    onClick = { vm.whatAmILookingAt() },
                     modifier = Modifier.weight(1f)
                 )
             }

@@ -1,6 +1,11 @@
 package com.cyangem.viewmodel
 
 import android.app.Application
+import android.graphics.Bitmap
+import com.cyangem.media.QueryStrategy
+import com.cyangem.media.WifiDirectManager
+import com.cyangem.ui.VoiceEngine
+import com.cyangem.ui.VoiceState
 import android.bluetooth.BluetoothDevice
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -38,7 +43,10 @@ data class UiState(
     val snackbarMessage: String? = null,
     val discoveredChars: Map<String, List<String>> = emptyMap(),
     val savedMac: String = "62:2F:7C:28:7B:3B",
-    val lastBleEvent: BleEvent? = null
+    val lastBleEvent: BleEvent? = null,
+    val voiceState: VoiceState = VoiceState.Idle,
+    val isListening: Boolean = false,
+    val queryStrategy: QueryStrategy = QueryStrategy.USE_PHONE_CAMERA
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -49,6 +57,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val gemsRepo      = GemsRepository(application)
 
     private var geminiEngine: GeminiEngine? = null
+    val voiceEngine = VoiceEngine(application)
+    val wifiManager = WifiDirectManager(application)
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -58,6 +68,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         observeSyncProgress()
         refreshGems()
         checkApiKey()
+        initVoice()
+        updateQueryStrategy()
     }
 
     // ── Setup / API key ───────────────────────────────────────────────────────
@@ -255,6 +267,117 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ── Voice ─────────────────────────────────────────────────────────────────
+
+    private fun initVoice() {
+        voiceEngine.onWakeWord = {
+            startVoiceQuery()
+        }
+        voiceEngine.onResult = { text ->
+            _uiState.value = _uiState.value.copy(isListening = false)
+            sendMessage(text)
+            // Speak response when ready
+            observeAndSpeakNextResponse()
+        }
+        viewModelScope.launch {
+            voiceEngine.voiceState.collect { state ->
+                _uiState.value = _uiState.value.copy(
+                    voiceState = state,
+                    isListening = state is VoiceState.Listening
+                )
+            }
+        }
+    }
+
+    fun startVoiceQuery() {
+        if (!apiKeyStore.hasApiKey()) {
+            showSnackbar("Add Gemini API key in Settings first")
+            return
+        }
+        voiceEngine.startListening()
+        showSnackbar("🎙 Listening…")
+    }
+
+    fun stopVoiceQuery() {
+        voiceEngine.stopListening()
+    }
+
+    fun updateQueryStrategy() {
+        _uiState.value = _uiState.value.copy(
+            queryStrategy = wifiManager.getQueryStrategy()
+        )
+    }
+
+    /**
+     * "What am I looking at?" — smart routing:
+     * Indoors (home Wi-Fi) → phone camera
+     * Outdoors (mobile data) → glasses Wi-Fi sync
+     */
+    fun whatAmILookingAt(capturePhoneCamera: (() -> Bitmap?)? = null) {
+        updateQueryStrategy()
+        val strategy = _uiState.value.queryStrategy
+        when (strategy) {
+            QueryStrategy.USE_PHONE_CAMERA -> {
+                val bitmap = capturePhoneCamera?.invoke()
+                if (bitmap != null) {
+                    analyzeImageBitmap(bitmap, "What am I looking at? Describe briefly.")
+                } else {
+                    showSnackbar("📷 Point your phone camera and try again")
+                    analyzeLatestGlassesPhoto("What am I looking at? Describe briefly.")
+                }
+            }
+            QueryStrategy.USE_GLASSES_WIFI -> {
+                showSnackbar("📡 Syncing from glasses…")
+                analyzeLatestGlassesPhoto("What am I looking at? Describe briefly.")
+            }
+        }
+    }
+
+    fun analyzeImageBitmap(bitmap: Bitmap, prompt: String = "What am I looking at?") {
+        val engine = geminiEngine ?: return
+        _uiState.value = _uiState.value.copy(isGeminiThinking = true)
+        val userMsg = ChatMessage(role = "user", text = "📷 $prompt")
+        _uiState.value = _uiState.value.copy(
+            chatMessages = _uiState.value.chatMessages + userMsg
+        )
+        viewModelScope.launch {
+            when (val result = engine.analyzeImage(bitmap, prompt)) {
+                is GeminiResult.Success -> {
+                    val modelMsg = ChatMessage(role = "model", text = result.text)
+                    _uiState.value = _uiState.value.copy(
+                        chatMessages = _uiState.value.chatMessages + modelMsg,
+                        isGeminiThinking = false
+                    )
+                    voiceEngine.speak(result.text)
+                }
+                is GeminiResult.Error -> {
+                    _uiState.value = _uiState.value.copy(
+                        isGeminiThinking = false,
+                        geminiError = result.message
+                    )
+                }
+                else -> {}
+            }
+        }
+    }
+
+    private fun observeAndSpeakNextResponse() {
+        viewModelScope.launch {
+            // Wait for the next model message and speak it
+            val before = _uiState.value.chatMessages.size
+            var waited = 0
+            while (waited < 30) {
+                kotlinx.coroutines.delay(500)
+                waited++
+                val msgs = _uiState.value.chatMessages
+                if (msgs.size > before && msgs.last().role == "model") {
+                    voiceEngine.speak(msgs.last().text)
+                    break
+                }
+            }
+        }
+    }
+
     fun clearChat() {
         _uiState.value = _uiState.value.copy(
             chatMessages = emptyList(),
@@ -305,6 +428,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        voiceEngine.destroy()
         super.onCleared()
         bleManager.close()
     }

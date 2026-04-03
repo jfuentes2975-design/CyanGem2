@@ -27,6 +27,7 @@ class MainActivity : ComponentActivity() {
                 add(Manifest.permission.BLUETOOTH_ADMIN)
                 add(Manifest.permission.ACCESS_FINE_LOCATION)
             }
+            add(Manifest.permission.RECORD_AUDIO)
             add(Manifest.permission.ACCESS_WIFI_STATE)
             add(Manifest.permission.CHANGE_WIFI_STATE)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

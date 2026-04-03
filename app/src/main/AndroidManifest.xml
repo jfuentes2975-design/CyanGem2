@@ -28,6 +28,9 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
+    <!-- Microphone for voice commands -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!-- Internet for Gemini API -->
     <uses-permission android:name="android.permission.INTERNET" />
 
