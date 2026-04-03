@@ -178,33 +178,42 @@ class CyanBleManager(private val context: Context) {
             }
             _discoveredChars.value = charMap
 
-            // Try primary service first
-            val primarySvc = gatt.getService(BleConstants.SERVICE_PRIMARY)
-                ?: gatt.getService(BleConstants.SERVICE_SECONDARY)
+            // Use confirmed UUIDs from BLE Inspector on W630_7B3B
+            val primarySvc   = gatt.getService(BleConstants.SERVICE_PRIMARY)
+            val secondarySvc = gatt.getService(BleConstants.SERVICE_SECONDARY)
+            val dataSvc      = gatt.getService(BleConstants.SERVICE_DATA)
 
-            if (primarySvc != null) {
-                writeChar = primarySvc.getCharacteristic(BleConstants.CHAR_WRITE)
-                    ?: primarySvc.getCharacteristic(BleConstants.NUS_RX)
-                    ?: primarySvc.characteristics.firstOrNull { c ->
-                        c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0 ||
-                        c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
-                    }
+            // Set write characteristic (ae01 = WRITE_NO_RESPONSE)
+            writeChar = primarySvc?.getCharacteristic(BleConstants.CHAR_WRITE)
+                ?: primarySvc?.getCharacteristic(BleConstants.CHAR_WRITE2)
+                ?: secondarySvc?.getCharacteristic(BleConstants.NUS_RX)
 
-                notifyChar = primarySvc.getCharacteristic(BleConstants.CHAR_NOTIFY)
-                    ?: primarySvc.getCharacteristic(BleConstants.NUS_TX)
-                    ?: primarySvc.characteristics.firstOrNull { c ->
-                        c.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
-                    }
+            // Enable notifications on ALL notify/indicate characteristics
+            // Button presses could come from any of these
+            val notifyTargets = listOfNotNull(
+                primarySvc?.getCharacteristic(BleConstants.CHAR_NOTIFY),
+                primarySvc?.getCharacteristic(BleConstants.CHAR_NOTIFY2),
+                primarySvc?.getCharacteristic(BleConstants.CHAR_INDICATE),
+                primarySvc?.getCharacteristic(BleConstants.CHAR_RW),
+                secondarySvc?.getCharacteristic(BleConstants.NUS_TX),
+                dataSvc?.getCharacteristic(BleConstants.CHAR_DATA)
+            )
+
+            // Set primary notify char for parsing
+            notifyChar = notifyTargets.firstOrNull()
+
+            // Enable notifications with delay between each to avoid GATT queue overflow
+            notifyTargets.forEachIndexed { i, char ->
+                handler.postDelayed({ enableNotifications(gatt, char) }, (i * 400).toLong())
             }
 
-            notifyChar?.let { enableNotifications(gatt, it) }
-
-            // Initial sync: datetime + battery request
+            // Initial sync after all notifications enabled
+            val initDelay = (notifyTargets.size * 400 + 600).toLong()
             handler.postDelayed({
-                sendCommand(BleConstants.CMD_DATETIME_SYNC,
-                    BleConstants.buildDatetimePayload())
+                sendCommand(BleConstants.CMD_DATETIME_SYNC, BleConstants.buildDatetimePayload())
                 handler.postDelayed({ sendCommand(BleConstants.CMD_BATTERY_REQ) }, 300)
-            }, 500)
+                handler.postDelayed({ sendCommand(BleConstants.CMD_MEDIA_COUNT) }, 600)
+            }, initDelay)
         }
 
         override fun onCharacteristicChanged(
@@ -229,8 +238,12 @@ class CyanBleManager(private val context: Context) {
     private fun parseNotification(data: ByteArray) {
         if (data.isEmpty()) return
 
-        // Emit raw event for debug overlay
+        // Always emit raw — helps identify button press byte sequences
         _events.value = BleEvent.RawNotification(data)
+
+        // Log raw bytes to help map button presses
+        val hex = data.joinToString(" ") { "%02X".format(it) }
+        android.util.Log.d("CyanGem_BLE", "Notification: $hex")
 
         when (data[0]) {
             BleConstants.CMD_BATTERY_REQ -> {

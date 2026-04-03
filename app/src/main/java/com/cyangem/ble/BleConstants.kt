@@ -14,19 +14,26 @@ import java.util.UUID
  */
 object BleConstants {
 
-    // ── Service UUIDs (confirmed) ──────────────────────────────────────────────
-    val SERVICE_PRIMARY: UUID   = UUID.fromString("7905FFF0-B5CE-4E99-A40F-4B1E122D00D0")
-    val SERVICE_SECONDARY: UUID = UUID.fromString("6e40fff0-b5a3-f393-e0a9-e50e24dcca9e")
+    // ── Service UUIDs (confirmed from BLE Inspector on W630_7B3B) ───────────────
+    val SERVICE_PRIMARY: UUID   = UUID.fromString("0000ae30-0000-1000-8000-00805f9b34fb")
+    val SERVICE_SECONDARY: UUID = UUID.fromString("0000ae3a-0000-1000-8000-00805f9b34fb")
+    val SERVICE_DATA: UUID      = UUID.fromString("00003802-0000-1000-8000-00805f9b34fb")
 
-    // ── Characteristic UUIDs ───────────────────────────────────────────────────
-    // Primary service characteristics (sequential from service base - verify with BLE inspector)
-    val CHAR_WRITE: UUID  = UUID.fromString("7905FFF1-B5CE-4E99-A40F-4B1E122D00D0")
-    val CHAR_NOTIFY: UUID = UUID.fromString("7905FFF2-B5CE-4E99-A40F-4B1E122D00D0")
-    val CHAR_DATA: UUID   = UUID.fromString("7905FFF3-B5CE-4E99-A40F-4B1E122D00D0")
+    // ── Characteristic UUIDs (confirmed from BLE Inspector) ───────────────────
+    // Primary service (ae30)
+    val CHAR_WRITE: UUID  = UUID.fromString("0000ae01-0000-1000-8000-00805f9b34fb") // props=4  WRITE
+    val CHAR_NOTIFY: UUID = UUID.fromString("0000ae02-0000-1000-8000-00805f9b34fb") // props=16 NOTIFY
+    val CHAR_WRITE2: UUID = UUID.fromString("0000ae03-0000-1000-8000-00805f9b34fb") // props=4  WRITE
+    val CHAR_NOTIFY2: UUID= UUID.fromString("0000ae04-0000-1000-8000-00805f9b34fb") // props=16 NOTIFY
+    val CHAR_INDICATE: UUID=UUID.fromString("0000ae05-0000-1000-8000-00805f9b34fb") // props=32 INDICATE
+    val CHAR_RW: UUID     = UUID.fromString("0000ae10-0000-1000-8000-00805f9b34fb") // props=10 READ+WRITE
 
-    // Nordic UART Service (NUS) on secondary service
-    val NUS_RX: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e") // write to glasses
-    val NUS_TX: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e") // notify from glasses
+    // Data service (3802) — likely used for media/AI data transfer
+    val CHAR_DATA: UUID   = UUID.fromString("00004a02-0000-1000-8000-00805f9b34fb") // props=26 READ+WRITE+NOTIFY
+
+    // Secondary service (ae3a)
+    val NUS_RX: UUID = UUID.fromString("0000ae3b-0000-1000-8000-00805f9b34fb") // props=4  WRITE
+    val NUS_TX: UUID = UUID.fromString("0000ae3c-0000-1000-8000-00805f9b34fb") // props=16 NOTIFY
 
     // Standard CCCD descriptor (enable notifications)
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
