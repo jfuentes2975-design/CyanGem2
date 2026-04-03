@@ -1,14 +1,17 @@
 package com.cyangem.ble
 
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.le.ScanRecord
 import android.bluetooth.le.ScanResult
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import com.oudmon.ble.base.bluetooth.BleOperateManager
 import com.oudmon.ble.base.communication.LargeDataHandler
 import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyListener
 import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyRsp
+import com.oudmon.ble.base.communication.bigData.resp.BaseResponse
 import com.oudmon.ble.base.scan.BleScannerHelper
+import com.oudmon.ble.base.scan.ScanRecord  // SDK's own ScanRecord, not android.bluetooth.le
 import com.oudmon.ble.base.scan.ScanWrapperCallback
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,11 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 enum class ConnectionState { IDLE, SCANNING, CONNECTING, CONNECTED, DISCONNECTING, DISCONNECTED }
 
-data class GlassesDevice(
-    val address: String,
-    val name: String,
-    val rssi: Int = 0
-)
+data class GlassesDevice(val address: String, val name: String, val rssi: Int = 0)
 
 data class GlassesStatus(
     val battery: Int = -1,
@@ -61,22 +60,22 @@ class CyanBleManager(private val context: Context) {
     private val _scannedDevices = MutableStateFlow<List<GlassesDevice>>(emptyList())
     val scannedDevices: StateFlow<List<GlassesDevice>> = _scannedDevices.asStateFlow()
 
+    // Empty map — SDK handles BLE internals
     val discoveredChars: StateFlow<Map<String, List<String>>> =
         MutableStateFlow<Map<String, List<String>>>(emptyMap()).asStateFlow()
 
-    private var notifyListenerRegistered = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var notifyRegistered = false
 
-    init {
-        registerNotifyListener()
-    }
+    init { registerNotifyListener() }
 
     private fun registerNotifyListener() {
-        if (notifyListenerRegistered) return
-        LargeDataHandler.getInstance().addOutDeviceListener(100, deviceNotifyListener)
-        notifyListenerRegistered = true
+        if (notifyRegistered) return
+        LargeDataHandler.getInstance().addOutDeviceListener(100, notifyListener)
+        notifyRegistered = true
     }
 
-    // ── Scanning ──────────────────────────────────────────────────────────────
+    // ── Scan ─────────────────────────────────────────────────────────────────
 
     fun startScan() {
         _scannedDevices.value = emptyList()
@@ -87,11 +86,11 @@ class CyanBleManager(private val context: Context) {
 
     fun stopScan() {
         BleScannerHelper.getInstance().stopScan(context)
-        if (_connectionState.value == ConnectionState.SCANNING) {
+        if (_connectionState.value == ConnectionState.SCANNING)
             _connectionState.value = ConnectionState.IDLE
-        }
     }
 
+    // ScanWrapperCallback — uses SDK's com.oudmon.ble.base.scan.ScanRecord
     private val scanCallback = object : ScanWrapperCallback {
         override fun onStart() {}
         override fun onStop() {}
@@ -99,45 +98,42 @@ class CyanBleManager(private val context: Context) {
             _events.value = BleEvent.Error("Scan failed: $errorCode")
             _connectionState.value = ConnectionState.IDLE
         }
-        override fun onLeScan(device: BluetoothDevice?, rssi: Int, scanRecord: ByteArray?) {
-            val addr = device?.address ?: return
+        override fun onLeScan(device: BluetoothDevice, rssi: Int, scanRecord: ByteArray?) {
             val name = try { device.name ?: "Unknown" } catch (_: SecurityException) { "Unknown" }
-            upsertDevice(addr, name, rssi)
+            upsertDevice(device.address, name, rssi)
         }
-        override fun onParsedData(device: BluetoothDevice?, scanRecord: ScanRecord?) {
-            val addr = device?.address ?: return
+        override fun onParsedData(device: BluetoothDevice, scanRecord: ScanRecord?) {
             val name = try {
                 scanRecord?.deviceName ?: device.name ?: "Unknown"
             } catch (_: SecurityException) { scanRecord?.deviceName ?: "Unknown" }
-            val rssi = _scannedDevices.value.firstOrNull { it.address == addr }?.rssi ?: 0
-            upsertDevice(addr, name, rssi)
+            val rssi = _scannedDevices.value.firstOrNull {
+                it.address.equals(device.address, true)
+            }?.rssi ?: 0
+            upsertDevice(device.address, name, rssi)
         }
         override fun onBatchScanResults(results: MutableList<ScanResult>?) {}
     }
 
     private fun upsertDevice(addr: String, name: String, rssi: Int) {
         val list = _scannedDevices.value.toMutableList()
-        val idx = list.indexOfFirst { it.address.equals(addr, ignoreCase = true) }
-        val device = GlassesDevice(address = addr, name = name, rssi = rssi)
-        if (idx >= 0) list[idx] = device else list.add(device)
+        val idx = list.indexOfFirst { it.address.equals(addr, true) }
+        val d = GlassesDevice(addr, name, rssi)
+        if (idx >= 0) list[idx] = d else list.add(d)
         _scannedDevices.value = list
     }
 
-    // ── Connection ────────────────────────────────────────────────────────────
+    // ── Connect ───────────────────────────────────────────────────────────────
 
-    fun connectByMac(macAddress: String) {
+    fun connectByMac(mac: String) {
         stopScan()
         _connectionState.value = ConnectionState.CONNECTING
-        BleOperateManager.getInstance().connectDirectly(macAddress)
+        BleOperateManager.getInstance().connectDirectly(mac)
     }
 
     fun disconnect() {
         _connectionState.value = ConnectionState.DISCONNECTING
         BleOperateManager.getInstance().unBindDevice()
     }
-
-    val isConnected: Boolean
-        get() = BleOperateManager.getInstance().isConnected
 
     // ── Commands ──────────────────────────────────────────────────────────────
 
@@ -194,53 +190,64 @@ class CyanBleManager(private val context: Context) {
                     videoCount = rsp.videoCount,
                     audioCount = rsp.recordCount
                 )
-                _events.value = BleEvent.MediaCountUpdate(rsp.imageCount, rsp.videoCount, rsp.recordCount)
+                _events.value = BleEvent.MediaCountUpdate(
+                    rsp.imageCount, rsp.videoCount, rsp.recordCount
+                )
             }
         }
     }
 
     fun syncTime() = LargeDataHandler.getInstance().syncTime { _, _ -> }
 
-    // ── Notification listener ─────────────────────────────────────────────────
+    // ── Notifications ─────────────────────────────────────────────────────────
+    // GlassesDeviceNotifyListener.parseData(int, GlassesDeviceNotifyRsp) — confirmed via javap
 
-    private val deviceNotifyListener = object : GlassesDeviceNotifyListener() {
+    private val notifyListener = object : GlassesDeviceNotifyListener() {
         override fun parseData(cmdType: Int, response: GlassesDeviceNotifyRsp) {
-            val load = response.loadData
-            if (load.size < 7) return
+            val load = response.loadData  // getLoadData() via Kotlin property
+            if (load == null || load.size < 7) return
             when (load[6].toInt()) {
-                0x05 -> {
-                    val battery = load[7].toInt() and 0xFF
+                0x05 -> {  // Battery
+                    val bat = load[7].toInt() and 0xFF
                     val charging = load[8].toInt() == 1
-                    _glassesStatus.value = _glassesStatus.value.copy(battery = battery, isCharging = charging)
-                    _events.value = BleEvent.BatteryUpdate(battery, charging)
+                    _glassesStatus.value = _glassesStatus.value.copy(battery = bat, isCharging = charging)
+                    _events.value = BleEvent.BatteryUpdate(bat, charging)
+                    _connectionState.value = ConnectionState.CONNECTED
                 }
-                0x02 -> _events.value = BleEvent.AiPhotoRequested
-                0x03 -> {
-                    if (load.size > 7 && load[7].toInt() == 1) {
+                0x02 -> _events.value = BleEvent.AiPhotoRequested   // Button 1 short
+                0x03 -> {  // Button 1 long / Hey Cyan
+                    if (load.size > 7 && load[7].toInt() == 1)
                         _events.value = BleEvent.AiVoiceRequested
+                }
+                0x0f -> {  // Media count update
+                    if (load.size >= 10) {
+                        _glassesStatus.value = _glassesStatus.value.copy(
+                            photoCount = load[7].toInt() and 0xFF,
+                            videoCount = load[8].toInt() and 0xFF,
+                            audioCount = load[9].toInt() and 0xFF
+                        )
                     }
                 }
             }
+        }
+
+        override fun parseData(cmdType: Int, response: BaseResponse) {
+            // Required by interface — route to typed version if possible
         }
     }
 
     fun updateConnectionState(connected: Boolean) {
         _connectionState.value = if (connected) {
             syncTime()
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                requestBattery()
-                requestMediaCount()
-            }, 1000)
+            mainHandler.postDelayed({ requestBattery(); requestMediaCount() }, 1000)
             ConnectionState.CONNECTED
-        } else {
-            ConnectionState.DISCONNECTED
-        }
+        } else ConnectionState.DISCONNECTED
     }
 
     fun close() {
-        if (notifyListenerRegistered) {
+        if (notifyRegistered) {
             try { LargeDataHandler.getInstance().removeOutDeviceListener(100) } catch (_: Exception) {}
-            notifyListenerRegistered = false
+            notifyRegistered = false
         }
     }
 }

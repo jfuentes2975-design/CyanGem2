@@ -3,16 +3,15 @@ package com.cyangem.ble
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.oudmon.ble.base.bluetooth.BleAction
-import com.oudmon.ble.base.bluetooth.BleOperateManager
 
+/**
+ * Receives BLE state broadcasts from the SDK.
+ * Connection state changes are handled via EventBus in MainActivity.
+ * This receiver just satisfies the SDK's internal broadcast registration requirement.
+ */
 class CyanBleReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        // SDK fires these actions on connect/disconnect
-        // MainActivity listens via EventBus — this receiver just keeps SDK internals happy
-        when (intent.action) {
-            BleAction.ACTION_GATT_CONNECTED -> { /* handled by EventBus */ }
-            BleAction.ACTION_GATT_DISCONNECTED -> { /* handled by EventBus */ }
-        }
+        // SDK fires LocalBroadcast intents for BLE state changes.
+        // MainActivity handles connection state via EventBus subscription.
     }
 }
