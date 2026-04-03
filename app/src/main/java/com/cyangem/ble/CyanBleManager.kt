@@ -9,7 +9,6 @@ import com.oudmon.ble.base.bluetooth.BleOperateManager
 import com.oudmon.ble.base.communication.LargeDataHandler
 import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyListener
 import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyRsp
-import com.oudmon.ble.base.communication.bigData.resp.BaseResponse
 import com.oudmon.ble.base.scan.BleScannerHelper
 import com.oudmon.ble.base.scan.ScanRecord  // SDK's own ScanRecord, not android.bluetooth.le
 import com.oudmon.ble.base.scan.ScanWrapperCallback
@@ -232,9 +231,6 @@ class CyanBleManager(private val context: Context) {
             }
         }
 
-        override fun parseData(cmdType: Int, response: BaseResponse) {
-            // Required by interface — route to typed version if possible
-        }
     }
 
     fun updateConnectionState(connected: Boolean) {
