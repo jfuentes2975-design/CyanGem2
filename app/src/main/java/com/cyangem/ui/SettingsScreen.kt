@@ -1,5 +1,7 @@
 package com.cyangem.ui
 
+import androidx.compose.animation.*
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -158,7 +160,7 @@ private fun HowToGetApiKey() {
             listOf(
                 "1. Go to aistudio.google.com",
                 "2. Sign in with your Google account",
-                "3. Click "Get API key" → Create",
+                "3. Click \"Get API key\" → Create",
                 "4. Copy and paste it above"
             ).forEach { step ->
                 Text(step, fontSize = 11.sp, color = OnSurfaceMuted)
