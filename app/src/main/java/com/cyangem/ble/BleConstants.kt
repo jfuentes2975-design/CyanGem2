@@ -87,5 +87,5 @@ object BleConstants {
     const val HTTP_TIMEOUT_SEC  = 10L
 
     // ── Device name prefix for BLE scan filter ─────────────────────────────────
-    val DEVICE_NAME_PREFIXES = listOf("HeyCyan", "HCyan", "QC-", "G300", "W610", "M01S")
+    val DEVICE_NAME_PREFIXES = listOf("HeyCyan", "HCyan", "QC-", "G300", "W610", "W630", "M01S")
 }
