@@ -1,5 +1,5 @@
 <resources>
-    <style name="Theme.CyanGem" parent="Theme.AppCompat.NoActionBar">
+    <style name="Theme.CyanGem" parent="android:Theme.DeviceDefault.NoActionBar">
         <item name="android:windowBackground">#0D1117</item>
         <item name="android:statusBarColor">#0D1117</item>
         <item name="android:navigationBarColor">#161B22</item>
