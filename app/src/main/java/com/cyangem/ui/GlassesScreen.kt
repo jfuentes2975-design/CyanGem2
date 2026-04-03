@@ -65,6 +65,16 @@ fun GlassesScreen(vm: MainViewModel) {
             )
         }
 
+        // Quick Connect button — bypasses scan, connects directly to saved glasses
+        item {
+            QuickConnectCard(
+                mac = uiState.savedMac,
+                connectionState = uiState.connectionState,
+                onConnect = { vm.connectSavedMac() },
+                onMacChange = { vm.connectByMac(it) }
+            )
+        }
+
         // Device list (shown during scan or if devices found)
         if (uiState.scannedDevices.isNotEmpty() || uiState.connectionState == ConnectionState.SCANNING) {
             item {
@@ -367,6 +377,40 @@ private fun MediaSyncCard(progress: MediaSyncProgress, onSync: () -> Unit) {
                 Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(if (progress.isRunning) "Syncing…" else "Sync Media to Gallery")
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickConnectCard(
+    mac: String,
+    connectionState: ConnectionState,
+    onConnect: () -> Unit,
+    onMacChange: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Quick Connect", fontWeight = FontWeight.SemiBold, color = OnSurface)
+            Text("Saved glasses MAC — tap to connect instantly without scanning",
+                fontSize = 12.sp, color = OnSurfaceMuted)
+            Text(mac, fontSize = 12.sp, color = CyanPrimary,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+            Button(
+                onClick = onConnect,
+                enabled = connectionState == ConnectionState.IDLE ||
+                          connectionState == ConnectionState.DISCONNECTED,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = CyanPrimary,
+                    contentColor = androidx.compose.ui.graphics.Color(0xFF003731)
+                )
+            ) {
+                Text("Connect to W630_7B3B", fontWeight = FontWeight.Bold)
             }
         }
     }

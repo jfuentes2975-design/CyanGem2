@@ -37,6 +37,8 @@ data class UiState(
     val syncProgress: MediaSyncProgress = MediaSyncProgress(),
     val snackbarMessage: String? = null,
     val discoveredChars: Map<String, List<String>> = emptyMap(),
+    val savedMac: String = "62:2F:7C:28:7B:3B",
+    val savedMac: String = "62:2F:7C:28:7B:3B",
     val lastBleEvent: BleEvent? = null
 )
 
@@ -136,6 +138,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun stopScan() = bleManager.stopScan()
     fun connect(device: BluetoothDevice) = bleManager.connect(device)
     fun disconnect() = bleManager.disconnect()
+
+    fun connectByMac(mac: String) {
+        _uiState.value = _uiState.value.copy(savedMac = mac)
+        bleManager.connectByMac(mac)
+    }
+
+    fun connectSavedMac() {
+        val mac = _uiState.value.savedMac
+        if (mac.isNotBlank()) bleManager.connectByMac(mac)
+        else showSnackbar("No saved glasses MAC address")
+    }
 
     fun takePhoto() = bleManager.takePhoto()
     fun startVideo() = bleManager.startVideo()

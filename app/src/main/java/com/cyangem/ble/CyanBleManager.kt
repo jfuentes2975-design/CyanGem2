@@ -126,6 +126,20 @@ class CyanBleManager(private val context: Context) {
         gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
+    /**
+     * Connect directly by MAC address — skips scanning entirely.
+     * Use when you already know the device address.
+     */
+    @SuppressLint("MissingPermission")
+    fun connectByMac(macAddress: String) {
+        stopScan()
+        val device = adapter?.getRemoteDevice(macAddress) ?: run {
+            emitError("Invalid MAC address: $macAddress"); return
+        }
+        _connectionState.value = ConnectionState.CONNECTING
+        gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+    }
+
     fun disconnect() {
         _connectionState.value = ConnectionState.DISCONNECTING
         gatt?.disconnect()
