@@ -84,18 +84,13 @@ class CyanBleManager(private val context: Context) {
         _scannedDevices.value = emptyList()
         _connectionState.value = ConnectionState.SCANNING
 
-        val filters = BleConstants.DEVICE_NAME_PREFIXES.map { prefix ->
-            ScanFilter.Builder().setDeviceName(prefix).build()
-        } + ScanFilter.Builder()
-            .setServiceUuid(android.os.ParcelUuid(BleConstants.SERVICE_PRIMARY))
-            .build()
-
+        // No filters — scan ALL nearby BLE devices so nothing gets missed
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
         scanner = adapter?.bluetoothLeScanner
-        scanner?.startScan(filters, settings, scanCallback)
+        scanner?.startScan(null, settings, scanCallback)
 
         // Auto-stop after timeout
         handler.postDelayed({ stopScan() }, scanTimeout)
