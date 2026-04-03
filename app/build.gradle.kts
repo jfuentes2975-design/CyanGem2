@@ -38,9 +38,17 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // Include local AAR libraries
+    repositories {
+        flatDir { dirs("libs") }
+    }
 }
 
 dependencies {
+    // Glasses SDK (real working protocol - from CyanBridge open source)
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
+
     implementation(libs.androidx.core.ktx)
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -62,6 +70,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.gson)
+
+    // EventBus (required by the glasses SDK)
+    implementation("org.greenrobot:eventbus:3.3.1")
 
     debugImplementation(libs.androidx.ui.tooling)
 }

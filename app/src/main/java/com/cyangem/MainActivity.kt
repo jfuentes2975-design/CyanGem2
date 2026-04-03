@@ -1,6 +1,8 @@
 package com.cyangem
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -12,10 +14,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModelProvider
 import com.cyangem.ui.CyanGemApp
 import com.cyangem.ui.theme.CyanGemTheme
+import com.cyangem.viewmodel.MainViewModel
+import com.oudmon.ble.base.bluetooth.BleOperateManager
+import org.greenrobot.eventbus.EventBus
+import org.greenrobot.eventbus.Subscribe
+import org.greenrobot.eventbus.ThreadMode
 
 class MainActivity : ComponentActivity() {
+
+    private lateinit var vm: MainViewModel
 
     private val requiredPermissions: Array<String>
         get() = buildList {
@@ -39,21 +49,50 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ ->
-        // Proceed regardless — the app will show errors if needed when the user tries to scan
-    }
+    ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         requestMissingPermissions()
+
+        vm = ViewModelProvider(this)[MainViewModel::class.java]
+
+        // Initialize the SDK
+        BleOperateManager.getInstance().init(this)
+
         setContent {
             CyanGemTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    CyanGemApp()
+                    CyanGemApp(vm)
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (!EventBus.getDefault().isRegistered(this)) {
+            EventBus.getDefault().register(this)
+        }
+        // Sync connection state on resume
+        val connected = BleOperateManager.getInstance().isConnected
+        vm.bleManager.updateConnectionState(connected)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (EventBus.getDefault().isRegistered(this)) {
+            EventBus.getDefault().unregister(this)
+        }
+    }
+
+    /** Receives BLE connection state changes from the SDK via EventBus */
+    @Subscribe(threadMode = ThreadMode.MAIN)
+    fun onBluetoothEvent(event: Any) {
+        // The SDK fires events when connection state changes
+        val connected = BleOperateManager.getInstance().isConnected
+        vm.bleManager.updateConnectionState(connected)
     }
 
     private fun requestMissingPermissions() {

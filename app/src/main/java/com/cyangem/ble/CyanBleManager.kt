@@ -1,11 +1,11 @@
 package com.cyangem.ble
 
-import android.annotation.SuppressLint
-import android.bluetooth.*
-import android.bluetooth.le.*
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
+import com.oudmon.ble.base.bluetooth.BleOperateManager
+import com.oudmon.ble.base.bluetooth.DeviceManager
+import com.oudmon.ble.base.communication.LargeDataHandler
+import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyListener
+import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyRsp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -13,9 +13,9 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class ConnectionState { IDLE, SCANNING, CONNECTING, CONNECTED, DISCONNECTING, DISCONNECTED }
 
 data class GlassesDevice(
-    val device: BluetoothDevice,
-    val rssi: Int,
-    val name: String
+    val address: String,
+    val name: String,
+    val rssi: Int = 0
 )
 
 data class GlassesStatus(
@@ -35,36 +35,39 @@ sealed class BleEvent {
     object VideoStopped : BleEvent()
     object AudioStarted : BleEvent()
     object AudioStopped : BleEvent()
-    /** Glasses button pressed requesting AI photo analysis — route to Gemini */
+    /** Glasses AI photo button pressed — Button 1 short */
     object AiPhotoRequested : BleEvent()
+    /** Glasses AI voice button pressed — Button 1 long / Hey Cyan */
+    object AiVoiceRequested : BleEvent()
     data class BatteryUpdate(val level: Int, val charging: Boolean) : BleEvent()
     data class MediaCountUpdate(val photos: Int, val videos: Int, val audio: Int) : BleEvent()
     data class VersionInfo(val firmware: String) : BleEvent()
-    data class RawNotification(val data: ByteArray) : BleEvent()
     data class Error(val message: String) : BleEvent()
 }
 
-@SuppressLint("MissingPermission")
+/**
+ * CyanBleManager wraps the real glasses SDK (glasses_sdk_20250723_v01.aar).
+ * All commands go through LargeDataHandler — no raw BLE characteristic writes.
+ *
+ * Confirmed command protocol from CyanBridge source:
+ * - Camera:       glassesControl([0x02, 0x01, 0x01])
+ * - Video start:  glassesControl([0x02, 0x01, 0x02])
+ * - Video stop:   glassesControl([0x02, 0x01, 0x03])
+ * - Audio start:  glassesControl([0x02, 0x01, 0x08])
+ * - Audio stop:   glassesControl([0x02, 0x01, 0x0c])
+ * - Stop AI mic:  glassesControl([0x02, 0x01, 0x0b])
+ * - Media count:  glassesControl([0x02, 0x04])
+ * - Download:     glassesControl([0x02, 0x01, 0x04])
+ *
+ * Notification bytes (loadData[6]):
+ * - 0x02 = AI Photo button pressed
+ * - 0x03 (+loadData[7]==1) = AI Voice button pressed
+ * - 0x05 = Battery report
+ */
 class CyanBleManager(private val context: Context) {
 
-    private val bluetoothManager =
-        context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-    private val adapter: BluetoothAdapter? get() = bluetoothManager.adapter
-
-    private var scanner: BluetoothLeScanner? = null
-    private var gatt: BluetoothGatt? = null
-    private var writeChar: BluetoothGattCharacteristic? = null
-    private var notifyChar: BluetoothGattCharacteristic? = null
-
-    private val handler = Handler(Looper.getMainLooper())
-    private val scanTimeout = 15_000L
-
-    // ── Public state ──────────────────────────────────────────────────────────
     private val _connectionState = MutableStateFlow(ConnectionState.IDLE)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
-
-    private val _scannedDevices = MutableStateFlow<List<GlassesDevice>>(emptyList())
-    val scannedDevices: StateFlow<List<GlassesDevice>> = _scannedDevices.asStateFlow()
 
     private val _glassesStatus = MutableStateFlow(GlassesStatus())
     val glassesStatus: StateFlow<GlassesStatus> = _glassesStatus.asStateFlow()
@@ -72,268 +75,230 @@ class CyanBleManager(private val context: Context) {
     private val _events = MutableStateFlow<BleEvent?>(null)
     val events: StateFlow<BleEvent?> = _events.asStateFlow()
 
-    // Discovered characteristics (for BLE inspector / debug)
-    private val _discoveredChars = MutableStateFlow<Map<String, List<String>>>(emptyMap())
-    val discoveredChars: StateFlow<Map<String, List<String>>> = _discoveredChars.asStateFlow()
+    // Expose discovered chars map (empty — SDK handles this internally)
+    val discoveredChars: StateFlow<Map<String, List<String>>> =
+        MutableStateFlow<Map<String, List<String>>>(emptyMap()).asStateFlow()
 
-    // ── Scanning ──────────────────────────────────────────────────────────────
+    // Expose scanned devices (SDK handles scanning internally)
+    val scannedDevices: StateFlow<List<GlassesDevice>> =
+        MutableStateFlow<List<GlassesDevice>>(emptyList()).asStateFlow()
+
+    private var notifyListenerRegistered = false
+
+    init {
+        registerNotifyListener()
+    }
+
+    private fun registerNotifyListener() {
+        if (notifyListenerRegistered) return
+        LargeDataHandler.getInstance().addOutDeviceListener(100, deviceNotifyListener)
+        notifyListenerRegistered = true
+    }
+
+    // ── Connection ────────────────────────────────────────────────────────────
+
     fun startScan() {
-        if (adapter?.isEnabled != true) {
-            emitError("Bluetooth is disabled"); return
-        }
-        _scannedDevices.value = emptyList()
         _connectionState.value = ConnectionState.SCANNING
-
-        // No filters — scan ALL nearby BLE devices so nothing gets missed
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
-
-        scanner = adapter?.bluetoothLeScanner
-        scanner?.startScan(null, settings, scanCallback)
-
-        // Auto-stop after timeout
-        handler.postDelayed({ stopScan() }, scanTimeout)
+        BleOperateManager.getInstance().startScan()
     }
 
     fun stopScan() {
-        scanner?.stopScan(scanCallback)
-        scanner = null
+        BleOperateManager.getInstance().stopScan()
         if (_connectionState.value == ConnectionState.SCANNING) {
             _connectionState.value = ConnectionState.IDLE
         }
     }
 
-    private val scanCallback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val name = result.device.name ?: return
-            val existing = _scannedDevices.value.toMutableList()
-            val idx = existing.indexOfFirst { it.device.address == result.device.address }
-            val device = GlassesDevice(result.device, result.rssi, name)
-            if (idx >= 0) existing[idx] = device else existing.add(device)
-            _scannedDevices.value = existing
-        }
-        override fun onScanFailed(errorCode: Int) {
-            emitError("Scan failed: $errorCode")
-            _connectionState.value = ConnectionState.IDLE
-        }
-    }
-
-    // ── Connecting ────────────────────────────────────────────────────────────
-    fun connect(device: BluetoothDevice) {
-        stopScan()
-        _connectionState.value = ConnectionState.CONNECTING
-        gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-    }
-
-    /**
-     * Connect directly by MAC address — skips scanning entirely.
-     * Use when you already know the device address.
-     */
-    @SuppressLint("MissingPermission")
     fun connectByMac(macAddress: String) {
-        stopScan()
-        val device = adapter?.getRemoteDevice(macAddress) ?: run {
-            emitError("Invalid MAC address: $macAddress"); return
-        }
         _connectionState.value = ConnectionState.CONNECTING
-        gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        BleOperateManager.getInstance().connectDirectly(macAddress)
     }
 
     fun disconnect() {
         _connectionState.value = ConnectionState.DISCONNECTING
-        gatt?.disconnect()
+        BleOperateManager.getInstance().unBindDevice()
     }
 
-    // ── GATT callbacks ────────────────────────────────────────────────────────
-    private val gattCallback = object : BluetoothGattCallback() {
+    val isConnected: Boolean
+        get() = BleOperateManager.getInstance().isConnected
 
-        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    _connectionState.value = ConnectionState.CONNECTED
-                    gatt.discoverServices()
-                }
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    writeChar = null
-                    notifyChar = null
-                    _connectionState.value = ConnectionState.DISCONNECTED
-                    gatt.close()
-                    this@CyanBleManager.gatt = null
-                }
-            }
-        }
+    // ── Commands ──────────────────────────────────────────────────────────────
 
-        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                emitError("Service discovery failed: $status"); return
-            }
-
-            // Log all discovered services + characteristics for debug
-            val charMap = mutableMapOf<String, List<String>>()
-            gatt.services.forEach { svc ->
-                charMap[svc.uuid.toString()] = svc.characteristics.map { c ->
-                    "${c.uuid} props=${c.properties}"
-                }
-            }
-            _discoveredChars.value = charMap
-
-            // Use confirmed UUIDs from BLE Inspector on W630_7B3B
-            val primarySvc   = gatt.getService(BleConstants.SERVICE_PRIMARY)
-            val secondarySvc = gatt.getService(BleConstants.SERVICE_SECONDARY)
-            val dataSvc      = gatt.getService(BleConstants.SERVICE_DATA)
-
-            // Set write characteristic (ae01 = WRITE_NO_RESPONSE)
-            writeChar = primarySvc?.getCharacteristic(BleConstants.CHAR_WRITE)
-                ?: primarySvc?.getCharacteristic(BleConstants.CHAR_WRITE2)
-                ?: secondarySvc?.getCharacteristic(BleConstants.NUS_RX)
-
-            // Enable notifications on ALL notify/indicate characteristics
-            // Button presses could come from any of these
-            val notifyTargets = listOfNotNull(
-                primarySvc?.getCharacteristic(BleConstants.CHAR_NOTIFY),
-                primarySvc?.getCharacteristic(BleConstants.CHAR_NOTIFY2),
-                primarySvc?.getCharacteristic(BleConstants.CHAR_INDICATE),
-                primarySvc?.getCharacteristic(BleConstants.CHAR_RW),
-                secondarySvc?.getCharacteristic(BleConstants.NUS_TX),
-                dataSvc?.getCharacteristic(BleConstants.CHAR_DATA)
-            )
-
-            // Set primary notify char for parsing
-            notifyChar = notifyTargets.firstOrNull()
-
-            // Enable notifications with delay between each to avoid GATT queue overflow
-            notifyTargets.forEachIndexed { i, char ->
-                handler.postDelayed({ enableNotifications(gatt, char) }, (i * 400).toLong())
-            }
-
-            // Initial sync after all notifications enabled
-            val initDelay = (notifyTargets.size * 400 + 600).toLong()
-            handler.postDelayed({
-                sendCommand(BleConstants.CMD_DATETIME_SYNC, BleConstants.buildDatetimePayload())
-                handler.postDelayed({ sendCommand(BleConstants.CMD_BATTERY_REQ) }, 300)
-                handler.postDelayed({ sendCommand(BleConstants.CMD_MEDIA_COUNT) }, 600)
-            }, initDelay)
-        }
-
-        override fun onCharacteristicChanged(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            value: ByteArray
-        ) {
-            parseNotification(value)
-        }
-
-        // Deprecated but needed for API < 33
-        @Suppress("DEPRECATION")
-        override fun onCharacteristicChanged(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic
-        ) {
-            parseNotification(characteristic.value ?: return)
-        }
-    }
-
-    // ── Notification parsing ──────────────────────────────────────────────────
-    private fun parseNotification(data: ByteArray) {
-        if (data.isEmpty()) return
-
-        // Always emit raw — helps identify button press byte sequences
-        _events.value = BleEvent.RawNotification(data)
-
-        // Log raw bytes to help map button presses
-        val hex = data.joinToString(" ") { "%02X".format(it) }
-        android.util.Log.d("CyanGem_BLE", "Notification: $hex")
-
-        when (data[0]) {
-            BleConstants.CMD_BATTERY_REQ -> {
-                if (data.size >= 3) {
-                    val level = data[1].toInt() and 0xFF
-                    val charging = data[2] != 0.toByte()
-                    _glassesStatus.value = _glassesStatus.value.copy(
-                        battery = level, isCharging = charging
-                    )
-                    _events.value = BleEvent.BatteryUpdate(level, charging)
-                }
-            }
-            BleConstants.CMD_MEDIA_COUNT -> {
-                if (data.size >= 4) {
-                    val photos = data[1].toInt() and 0xFF
-                    val videos = data[2].toInt() and 0xFF
-                    val audio  = data[3].toInt() and 0xFF
-                    _glassesStatus.value = _glassesStatus.value.copy(
-                        photoCount = photos, videoCount = videos, audioCount = audio
-                    )
-                    _events.value = BleEvent.MediaCountUpdate(photos, videos, audio)
-                }
-            }
-            BleConstants.CMD_PHOTO -> {
+    fun takePhoto() {
+        LargeDataHandler.getInstance().glassesControl(
+            byteArrayOf(0x02, 0x01, 0x01)
+        ) { _, rsp ->
+            if (rsp.dataType == 1 && rsp.errorCode == 0) {
                 _events.value = BleEvent.PhotoTaken
                 _glassesStatus.value = _glassesStatus.value.copy(
                     photoCount = _glassesStatus.value.photoCount + 1
                 )
             }
-            BleConstants.CMD_VIDEO_START -> {
+        }
+    }
+
+    fun startVideo() {
+        LargeDataHandler.getInstance().glassesControl(
+            byteArrayOf(0x02, 0x01, 0x02)
+        ) { _, rsp ->
+            if (rsp.dataType == 1 && rsp.errorCode == 0 && rsp.workTypeIng == 2) {
                 _glassesStatus.value = _glassesStatus.value.copy(isRecordingVideo = true)
                 _events.value = BleEvent.VideoStarted
             }
-            BleConstants.CMD_VIDEO_STOP -> {
+        }
+    }
+
+    fun stopVideo() {
+        LargeDataHandler.getInstance().glassesControl(
+            byteArrayOf(0x02, 0x01, 0x03)
+        ) { _, rsp ->
+            if (rsp.dataType == 1) {
                 _glassesStatus.value = _glassesStatus.value.copy(isRecordingVideo = false)
                 _events.value = BleEvent.VideoStopped
             }
-            BleConstants.CMD_AUDIO_START -> {
+        }
+    }
+
+    fun startAudio() {
+        LargeDataHandler.getInstance().glassesControl(
+            byteArrayOf(0x02, 0x01, 0x08)
+        ) { _, rsp ->
+            if (rsp.dataType == 1 && rsp.errorCode == 0) {
                 _glassesStatus.value = _glassesStatus.value.copy(isRecordingAudio = true)
                 _events.value = BleEvent.AudioStarted
             }
-            BleConstants.CMD_AUDIO_STOP -> {
+        }
+    }
+
+    fun stopAudio() {
+        LargeDataHandler.getInstance().glassesControl(
+            byteArrayOf(0x02, 0x01, 0x0c)
+        ) { _, rsp ->
+            if (rsp.dataType == 1) {
                 _glassesStatus.value = _glassesStatus.value.copy(isRecordingAudio = false)
                 _events.value = BleEvent.AudioStopped
             }
-            BleConstants.CMD_AI_PHOTO -> {
-                // Glasses requested AI photo — route to Gemini instead of stock AI
-                _events.value = BleEvent.AiPhotoRequested
+        }
+    }
+
+    fun stopAiMic() {
+        LargeDataHandler.getInstance().glassesControl(
+            byteArrayOf(0x02, 0x01, 0x0b)
+        ) { _, _ -> }
+    }
+
+    fun requestBattery() {
+        LargeDataHandler.getInstance().syncBattery()
+    }
+
+    fun requestMediaCount() {
+        LargeDataHandler.getInstance().glassesControl(
+            byteArrayOf(0x02, 0x04)
+        ) { _, rsp ->
+            if (rsp.dataType == 4) {
+                _glassesStatus.value = _glassesStatus.value.copy(
+                    photoCount = rsp.imageCount,
+                    videoCount = rsp.videoCount,
+                    audioCount = rsp.recordCount
+                )
+                _events.value = BleEvent.MediaCountUpdate(
+                    rsp.imageCount, rsp.videoCount, rsp.recordCount
+                )
             }
-            BleConstants.CMD_VERSION_REQ -> {
-                val version = String(data.drop(1).toByteArray()).trim()
+        }
+    }
+
+    fun syncTime() {
+        LargeDataHandler.getInstance().syncTime { _, _ -> }
+    }
+
+    fun requestVersion() {
+        LargeDataHandler.getInstance().syncDeviceInfo { _, response ->
+            if (response != null) {
+                val version = "FW: ${response.firmwareVersion} WiFi: ${response.wifiFirmwareVersion}"
                 _glassesStatus.value = _glassesStatus.value.copy(firmwareVersion = version)
                 _events.value = BleEvent.VersionInfo(version)
             }
         }
     }
 
-    // ── Command sending ───────────────────────────────────────────────────────
-    fun sendCommand(cmd: Byte, payload: ByteArray = ByteArray(0)): Boolean {
-        val char = writeChar ?: run { emitError("Not connected or write char not found"); return false }
-        val frame = BleConstants.buildCommand(cmd, payload)
-        char.value = frame
-        @Suppress("DEPRECATION")
-        return gatt?.writeCharacteristic(char) == true
+    fun enterDownloadMode() {
+        LargeDataHandler.getInstance().glassesControl(
+            byteArrayOf(0x02, 0x01, 0x04)
+        ) { _, _ -> }
     }
 
-    fun takePhoto()        = sendCommand(BleConstants.CMD_PHOTO)
-    fun startVideo()       = sendCommand(BleConstants.CMD_VIDEO_START)
-    fun stopVideo()        = sendCommand(BleConstants.CMD_VIDEO_STOP)
-    fun startAudio()       = sendCommand(BleConstants.CMD_AUDIO_START)
-    fun stopAudio()        = sendCommand(BleConstants.CMD_AUDIO_STOP)
-    fun requestBattery()   = sendCommand(BleConstants.CMD_BATTERY_REQ)
-    fun requestMediaCount()= sendCommand(BleConstants.CMD_MEDIA_COUNT)
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
-    private fun enableNotifications(gatt: BluetoothGatt, char: BluetoothGattCharacteristic) {
-        gatt.setCharacteristicNotification(char, true)
-        val descriptor = char.getDescriptor(BleConstants.CCCD) ?: return
-        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-        @Suppress("DEPRECATION")
-        gatt.writeDescriptor(descriptor)
+    fun exitDownloadMode() {
+        LargeDataHandler.getInstance().glassesControl(
+            byteArrayOf(0x02, 0x01, 0x09)
+        ) { _, _ -> }
     }
 
-    private fun emitError(msg: String) {
-        _events.value = BleEvent.Error(msg)
+    // ── Notification listener ─────────────────────────────────────────────────
+
+    private val deviceNotifyListener = object : GlassesDeviceNotifyListener() {
+        override fun parseData(cmdType: Int, response: GlassesDeviceNotifyRsp) {
+            val load = response.loadData
+            if (load.size < 7) return
+
+            when (load[6].toInt()) {
+                // Battery report
+                0x05 -> {
+                    val battery = load[7].toInt() and 0xFF
+                    val charging = load[8].toInt() == 1
+                    _glassesStatus.value = _glassesStatus.value.copy(
+                        battery = battery, isCharging = charging
+                    )
+                    _events.value = BleEvent.BatteryUpdate(battery, charging)
+                    _connectionState.value = ConnectionState.CONNECTED
+                }
+                // AI Photo button — Button 1 short press
+                0x02 -> {
+                    _events.value = BleEvent.AiPhotoRequested
+                    _connectionState.value = ConnectionState.CONNECTED
+                }
+                // AI Voice button — Button 1 long press / Hey Cyan
+                0x03 -> {
+                    if (load.size > 7 && load[7].toInt() == 1) {
+                        _events.value = BleEvent.AiVoiceRequested
+                        _connectionState.value = ConnectionState.CONNECTED
+                    }
+                }
+                // Media count update
+                0x0f -> {
+                    if (load.size >= 10) {
+                        val photos = load[7].toInt() and 0xFF
+                        val videos = load[8].toInt() and 0xFF
+                        val audio  = load[9].toInt() and 0xFF
+                        _glassesStatus.value = _glassesStatus.value.copy(
+                            photoCount = photos, videoCount = videos, audioCount = audio
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun updateConnectionState(connected: Boolean) {
+        _connectionState.value = if (connected) {
+            // Initial sync on connect
+            syncTime()
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                requestBattery()
+                requestMediaCount()
+            }, 1000)
+            ConnectionState.CONNECTED
+        } else {
+            ConnectionState.DISCONNECTED
+        }
     }
 
     fun close() {
-        stopScan()
-        gatt?.close()
-        gatt = null
+        if (notifyListenerRegistered) {
+            try {
+                LargeDataHandler.getInstance().removeOutDeviceListener(100)
+            } catch (_: Exception) {}
+            notifyListenerRegistered = false
+        }
     }
 }
