@@ -231,7 +231,7 @@ private fun DeviceRow(device: GlassesDevice, onClick: () -> Unit) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(Icons.Default.Glasses, contentDescription = null, tint = CyanPrimary)
+                Icon(Icons.Default.BluetoothConnected, contentDescription = null, tint = CyanPrimary)
                 Column {
                     Text(device.name, fontWeight = FontWeight.Medium, color = OnSurface)
                     Text(device.device.address, fontSize = 11.sp, color = OnSurfaceMuted)

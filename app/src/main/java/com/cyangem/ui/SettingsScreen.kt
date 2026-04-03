@@ -1,6 +1,8 @@
 package com.cyangem.ui
 
 import androidx.compose.foundation.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -183,7 +185,7 @@ private fun ConnectionTipsCard() {
                     Text(title, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = CyanPrimary)
                     Text(detail, fontSize = 12.sp, color = OnSurfaceMuted)
                 }
-                if (title != "🔧 Commands fail?") Divider(color = Color(0xFF30363D), thickness = 0.5.dp)
+                if (title != "🔧 Commands fail?") HorizontalDivider(color = Color(0xFF30363D), thickness = 0.5.dp)
             }
         }
     }

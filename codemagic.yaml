@@ -10,18 +10,9 @@ workflows:
         script: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
-      - name: Download Gradle wrapper JAR
-        script: |
-          curl -L "https://github.com/gradle/gradle/raw/v8.7.0/gradle/wrapper/gradle-wrapper.jar" \
-            -o gradle/wrapper/gradle-wrapper.jar
-
-      - name: Make gradlew executable
-        script: |
-          chmod +x gradlew
-
       - name: Build debug APK
         script: |
-          ./gradlew assembleDebug --stacktrace
+          gradle assembleDebug --stacktrace
 
     artifacts:
       - app/build/outputs/apk/debug/*.apk
