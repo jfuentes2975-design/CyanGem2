@@ -38,7 +38,6 @@ data class UiState(
     val snackbarMessage: String? = null,
     val discoveredChars: Map<String, List<String>> = emptyMap(),
     val savedMac: String = "62:2F:7C:28:7B:3B",
-    val savedMac: String = "62:2F:7C:28:7B:3B",
     val lastBleEvent: BleEvent? = null
 )
 
