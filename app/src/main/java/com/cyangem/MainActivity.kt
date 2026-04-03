@@ -79,7 +79,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @Subscribe(threadMode = ThreadMode.MAIN)
-    fun onBluetoothEvent(event: Any) {
+    fun onBleStateEvent(event: BleStateEvent) {
         vm.bleManager.updateConnectionState(BleOperateManager.getInstance().isConnected)
     }
 
