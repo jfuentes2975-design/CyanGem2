@@ -42,7 +42,9 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <application
+        xmlns:tools="http://schemas.android.com/tools"
         android:allowBackup="false"
+        tools:replace="android:allowBackup"
         android:icon="@android:drawable/sym_def_app_icon"
         android:label="CyanGem"
         android:roundIcon="@android:drawable/sym_def_app_icon"
