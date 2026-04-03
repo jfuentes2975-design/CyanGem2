@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- HeyCyan glasses serve media over plain HTTP on local Wi-Fi Direct network -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.43.1</domain>
+        <domain includeSubdomains="false">192.168.49.1</domain>
+        <domain includeSubdomains="false">192.168.4.1</domain>
+        <domain includeSubdomains="false">192.168.1.1</domain>
+        <domain includeSubdomains="false">10.0.0.1</domain>
+    </domain-config>
+    <!-- Gemini API uses HTTPS — default secure -->
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

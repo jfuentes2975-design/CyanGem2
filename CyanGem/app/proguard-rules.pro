@@ -1,0 +1,2 @@
+-keep class com.cyangem.data.** { *; }
+-keep class com.google.ai.** { *; }
