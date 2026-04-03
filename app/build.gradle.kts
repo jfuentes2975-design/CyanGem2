@@ -69,6 +69,7 @@ dependencies {
 
     // EventBus (required by the glasses SDK)
     implementation("org.greenrobot:eventbus:3.3.1")
+    implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
 
     debugImplementation(libs.androidx.ui.tooling)
 }

@@ -102,14 +102,15 @@ class CyanBleManager(private val context: Context) {
             val name = try { device.name ?: "Unknown" } catch (_: SecurityException) { "Unknown" }
             upsertDevice(device.address, name, rssi)
         }
-        override fun onParsedData(device: BluetoothDevice, scanRecord: ScanRecord?) {
+        override fun onParsedData(device: BluetoothDevice?, scanRecord: ScanRecord?) {
+            val addr = device?.address ?: return
             val name = try {
                 scanRecord?.deviceName ?: device.name ?: "Unknown"
             } catch (_: SecurityException) { scanRecord?.deviceName ?: "Unknown" }
             val rssi = _scannedDevices.value.firstOrNull {
-                it.address.equals(device.address, true)
+                it.address.equals(addr, true)
             }?.rssi ?: 0
-            upsertDevice(device.address, name, rssi)
+            upsertDevice(addr, name, rssi)
         }
         override fun onBatchScanResults(results: MutableList<ScanResult>?) {}
     }
