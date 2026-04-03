@@ -1,8 +1,6 @@
 package com.cyangem
 
 import android.Manifest
-import android.bluetooth.BluetoothAdapter
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -55,12 +53,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         requestMissingPermissions()
-
         vm = ViewModelProvider(this)[MainViewModel::class.java]
-
-        // Initialize the SDK
-        BleOperateManager.getInstance().init(this)
-
         setContent {
             CyanGemTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -75,9 +68,7 @@ class MainActivity : ComponentActivity() {
         if (!EventBus.getDefault().isRegistered(this)) {
             EventBus.getDefault().register(this)
         }
-        // Sync connection state on resume
-        val connected = BleOperateManager.getInstance().isConnected
-        vm.bleManager.updateConnectionState(connected)
+        vm.bleManager.updateConnectionState(BleOperateManager.getInstance().isConnected)
     }
 
     override fun onStop() {
@@ -87,20 +78,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Receives BLE connection state changes from the SDK via EventBus */
     @Subscribe(threadMode = ThreadMode.MAIN)
     fun onBluetoothEvent(event: Any) {
-        // The SDK fires events when connection state changes
-        val connected = BleOperateManager.getInstance().isConnected
-        vm.bleManager.updateConnectionState(connected)
+        vm.bleManager.updateConnectionState(BleOperateManager.getInstance().isConnected)
     }
 
     private fun requestMissingPermissions() {
         val missing = requiredPermissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        if (missing.isNotEmpty()) {
-            permissionLauncher.launch(missing.toTypedArray())
-        }
+        if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
     }
 }

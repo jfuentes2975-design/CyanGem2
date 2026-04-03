@@ -86,7 +86,7 @@ fun GlassesScreen(vm: MainViewModel) {
                 )
             }
             items(uiState.scannedDevices) { device ->
-                DeviceRow(device = device, onClick = { vm.connect(device.device) })
+                DeviceRow(device = device, onClick = { vm.connectByMac(device.address) })
             }
             if (uiState.scannedDevices.isEmpty() && uiState.connectionState == ConnectionState.SCANNING) {
                 item { ScanningPlaceholder() }
@@ -244,7 +244,7 @@ private fun DeviceRow(device: GlassesDevice, onClick: () -> Unit) {
                 Icon(Icons.Default.BluetoothConnected, contentDescription = null, tint = CyanPrimary)
                 Column {
                     Text(device.name, fontWeight = FontWeight.Medium, color = OnSurface)
-                    Text(device.device.address, fontSize = 11.sp, color = OnSurfaceMuted)
+                    Text(device.address, fontSize = 11.sp, color = OnSurfaceMuted)
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

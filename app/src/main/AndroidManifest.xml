@@ -42,6 +42,7 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <application
+        android:name=".CyanGemApplication"
         xmlns:tools="http://schemas.android.com/tools"
         android:allowBackup="false"
         tools:replace="android:allowBackup"

@@ -6,7 +6,6 @@ import com.cyangem.media.QueryStrategy
 import com.cyangem.media.WifiDirectManager
 import com.cyangem.ui.VoiceEngine
 import com.cyangem.ui.VoiceState
-import android.bluetooth.BluetoothDevice
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.cyangem.ble.BleConstants
@@ -147,13 +146,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startScan() = bleManager.startScan()
     fun stopScan() = bleManager.stopScan()
-    fun connect(device: BluetoothDevice) = bleManager.connect(device)
-    fun disconnect() = bleManager.disconnect()
-
     fun connectByMac(mac: String) {
         _uiState.value = _uiState.value.copy(savedMac = mac)
         bleManager.connectByMac(mac)
     }
+    fun disconnect() = bleManager.disconnect()
 
     fun connectSavedMac() {
         val mac = _uiState.value.savedMac
