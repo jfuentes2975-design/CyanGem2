@@ -39,10 +39,6 @@ android {
         compose = true
     }
 
-    // Include local AAR libraries
-    repositories {
-        flatDir { dirs("libs") }
-    }
 }
 
 dependencies {
