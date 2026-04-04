@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
         if (!EventBus.getDefault().isRegistered(this)) {
             EventBus.getDefault().register(this)
         }
-        vm.bleManager.updateConnectionState(BleOperateManager.getInstance().isConnected)
+        vm.bleManager?.updateConnectionState(BleOperateManager.getInstance().isConnected)
     }
 
     override fun onStop() {
@@ -80,7 +80,7 @@ class MainActivity : ComponentActivity() {
 
     @Subscribe(threadMode = ThreadMode.MAIN)
     fun onBleStateEvent(event: BleStateEvent) {
-        vm.bleManager.updateConnectionState(BleOperateManager.getInstance().isConnected)
+        vm.bleManager?.updateConnectionState(BleOperateManager.getInstance().isConnected)
     }
 
     private fun requestMissingPermissions() {
