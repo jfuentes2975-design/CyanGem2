@@ -10,7 +10,7 @@ import com.oudmon.ble.base.communication.LargeDataHandler
 import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyListener
 import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyRsp
 import com.oudmon.ble.base.scan.BleScannerHelper
-import com.oudmon.ble.base.scan.ScanRecord  // SDK's own ScanRecord, not android.bluetooth.le
+import com.oudmon.ble.base.scan.ScanRecord
 import com.oudmon.ble.base.scan.ScanWrapperCallback
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -59,37 +59,47 @@ class CyanBleManager(private val context: Context) {
     private val _scannedDevices = MutableStateFlow<List<GlassesDevice>>(emptyList())
     val scannedDevices: StateFlow<List<GlassesDevice>> = _scannedDevices.asStateFlow()
 
-    // Empty map — SDK handles BLE internals
     val discoveredChars: StateFlow<Map<String, List<String>>> =
         MutableStateFlow<Map<String, List<String>>>(emptyMap()).asStateFlow()
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var notifyRegistered = false
 
-    init { registerNotifyListener() }
+    // FIX: Both listeners defined BEFORE init{} so they are non-null when init runs.
+    // Same root cause as VoiceEngine — Kotlin initializes properties in order of appearance.
 
-    private fun registerNotifyListener() {
-        if (notifyRegistered) return
-        LargeDataHandler.getInstance().addOutDeviceListener(100, notifyListener)
-        notifyRegistered = true
+    private val notifyListener = object : GlassesDeviceNotifyListener() {
+        override fun parseData(cmdType: Int, response: GlassesDeviceNotifyRsp) {
+            val load = response.loadData ?: return
+            if (load.size < 7) return
+            when (load[6].toInt()) {
+                0x05 -> {
+                    val bat = load[7].toInt() and 0xFF
+                    val charging = load[8].toInt() == 1
+                    _glassesStatus.value = _glassesStatus.value.copy(
+                        battery = bat, isCharging = charging
+                    )
+                    _events.value = BleEvent.BatteryUpdate(bat, charging)
+                    _connectionState.value = ConnectionState.CONNECTED
+                }
+                0x02 -> _events.value = BleEvent.AiPhotoRequested
+                0x03 -> {
+                    if (load.size > 7 && load[7].toInt() == 1)
+                        _events.value = BleEvent.AiVoiceRequested
+                }
+                0x0f -> {
+                    if (load.size >= 10) {
+                        _glassesStatus.value = _glassesStatus.value.copy(
+                            photoCount = load[7].toInt() and 0xFF,
+                            videoCount = load[8].toInt() and 0xFF,
+                            audioCount = load[9].toInt() and 0xFF
+                        )
+                    }
+                }
+            }
+        }
     }
 
-    // ── Scan ─────────────────────────────────────────────────────────────────
-
-    fun startScan() {
-        _scannedDevices.value = emptyList()
-        _connectionState.value = ConnectionState.SCANNING
-        BleScannerHelper.getInstance().reSetCallback()
-        BleScannerHelper.getInstance().scanDevice(context, null, scanCallback)
-    }
-
-    fun stopScan() {
-        BleScannerHelper.getInstance().stopScan(context)
-        if (_connectionState.value == ConnectionState.SCANNING)
-            _connectionState.value = ConnectionState.IDLE
-    }
-
-    // ScanWrapperCallback — uses SDK's com.oudmon.ble.base.scan.ScanRecord
     private val scanCallback = object : ScanWrapperCallback {
         override fun onStart() {}
         override fun onStop() {}
@@ -112,6 +122,32 @@ class CyanBleManager(private val context: Context) {
             upsertDevice(addr, name, rssi)
         }
         override fun onBatchScanResults(results: MutableList<ScanResult>?) {}
+    }
+
+    // init runs AFTER all properties above are initialized
+    init {
+        registerNotifyListener()
+    }
+
+    private fun registerNotifyListener() {
+        if (notifyRegistered) return
+        LargeDataHandler.getInstance().addOutDeviceListener(100, notifyListener)
+        notifyRegistered = true
+    }
+
+    // ── Scan ─────────────────────────────────────────────────────────────────
+
+    fun startScan() {
+        _scannedDevices.value = emptyList()
+        _connectionState.value = ConnectionState.SCANNING
+        BleScannerHelper.getInstance().reSetCallback()
+        BleScannerHelper.getInstance().scanDevice(context, null, scanCallback)
+    }
+
+    fun stopScan() {
+        BleScannerHelper.getInstance().stopScan(context)
+        if (_connectionState.value == ConnectionState.SCANNING)
+            _connectionState.value = ConnectionState.IDLE
     }
 
     private fun upsertDevice(addr: String, name: String, rssi: Int) {
@@ -198,40 +234,6 @@ class CyanBleManager(private val context: Context) {
     }
 
     fun syncTime() = LargeDataHandler.getInstance().syncTime { _, _ -> }
-
-    // ── Notifications ─────────────────────────────────────────────────────────
-    // GlassesDeviceNotifyListener.parseData(int, GlassesDeviceNotifyRsp) — confirmed via javap
-
-    private val notifyListener = object : GlassesDeviceNotifyListener() {
-        override fun parseData(cmdType: Int, response: GlassesDeviceNotifyRsp) {
-            val load = response.loadData  // getLoadData() via Kotlin property
-            if (load == null || load.size < 7) return
-            when (load[6].toInt()) {
-                0x05 -> {  // Battery
-                    val bat = load[7].toInt() and 0xFF
-                    val charging = load[8].toInt() == 1
-                    _glassesStatus.value = _glassesStatus.value.copy(battery = bat, isCharging = charging)
-                    _events.value = BleEvent.BatteryUpdate(bat, charging)
-                    _connectionState.value = ConnectionState.CONNECTED
-                }
-                0x02 -> _events.value = BleEvent.AiPhotoRequested   // Button 1 short
-                0x03 -> {  // Button 1 long / Hey Cyan
-                    if (load.size > 7 && load[7].toInt() == 1)
-                        _events.value = BleEvent.AiVoiceRequested
-                }
-                0x0f -> {  // Media count update
-                    if (load.size >= 10) {
-                        _glassesStatus.value = _glassesStatus.value.copy(
-                            photoCount = load[7].toInt() and 0xFF,
-                            videoCount = load[8].toInt() and 0xFF,
-                            audioCount = load[9].toInt() and 0xFF
-                        )
-                    }
-                }
-            }
-        }
-
-    }
 
     fun updateConnectionState(connected: Boolean) {
         _connectionState.value = if (connected) {
