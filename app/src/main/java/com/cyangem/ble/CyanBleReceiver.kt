@@ -2,6 +2,7 @@ package com.cyangem.ble
 
 import android.bluetooth.BluetoothDevice
 import android.util.Log
+import com.cyangem.BleStateEvent
 import com.oudmon.ble.base.bluetooth.BleOperateManager
 import com.oudmon.ble.base.bluetooth.DeviceManager
 import com.oudmon.ble.base.bluetooth.QCBluetoothCallbackCloneReceiver
@@ -9,9 +10,11 @@ import com.oudmon.ble.base.communication.LargeDataHandler
 import org.greenrobot.eventbus.EventBus
 
 /**
- * SDK BLE callback receiver — must extend QCBluetoothCallbackCloneReceiver.
+ * SDK BLE callback receiver — extends QCBluetoothCallbackCloneReceiver.
  * Registered with LocalBroadcastManager using BleAction.getIntentFilter().
  * Mirrors CyanBridge's MyBluetoothReceiver exactly.
+ *
+ * Posts BleStateEvent (the type MainActivity @Subscribe listens for).
  */
 class CyanBleReceiver : QCBluetoothCallbackCloneReceiver() {
 
@@ -20,26 +23,19 @@ class CyanBleReceiver : QCBluetoothCallbackCloneReceiver() {
         if (device != null && connected) {
             device.name?.let { DeviceManager.getInstance().deviceName = it }
         } else {
-            EventBus.getDefault().post(BleConnectionEvent(false))
+            EventBus.getDefault().post(BleStateEvent(false))
         }
     }
 
     override fun onServiceDiscovered() {
-        Log.d("CyanGem_BLE", "onServiceDiscovered — enabling data channel")
-        // CRITICAL: must call initEnable() so commands work after connection
+        Log.d("CyanGem_BLE", "onServiceDiscovered — calling initEnable()")
+        // CRITICAL: initEnable() must be called here or ALL commands fail silently
         LargeDataHandler.getInstance().initEnable()
         BleOperateManager.getInstance().isReady = true
-        EventBus.getDefault().post(BleConnectionEvent(true))
+        // Post the event type MainActivity listens for
+        EventBus.getDefault().post(BleStateEvent(true))
     }
 
-    override fun onCharacteristicChange(address: String?, uuid: String?, data: ByteArray?) {
-        // BLE data received — SDK handles routing internally
-    }
-
-    override fun onCharacteristicRead(uuid: String?, data: ByteArray?) {
-        // Version info etc
-    }
+    override fun onCharacteristicChange(address: String?, uuid: String?, data: ByteArray?) {}
+    override fun onCharacteristicRead(uuid: String?, data: ByteArray?) {}
 }
-
-/** Posted via EventBus when BLE connection state changes */
-data class BleConnectionEvent(val connected: Boolean)
