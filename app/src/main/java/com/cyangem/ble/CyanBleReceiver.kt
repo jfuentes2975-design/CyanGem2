@@ -1,17 +1,45 @@
 package com.cyangem.ble
 
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
+import android.bluetooth.BluetoothDevice
+import android.util.Log
+import com.oudmon.ble.base.bluetooth.BleOperateManager
+import com.oudmon.ble.base.bluetooth.DeviceManager
+import com.oudmon.ble.base.bluetooth.QCBluetoothCallbackCloneReceiver
+import com.oudmon.ble.base.communication.LargeDataHandler
+import org.greenrobot.eventbus.EventBus
 
 /**
- * Receives BLE state broadcasts from the SDK.
- * Connection state changes are handled via EventBus in MainActivity.
- * This receiver just satisfies the SDK's internal broadcast registration requirement.
+ * SDK BLE callback receiver — must extend QCBluetoothCallbackCloneReceiver.
+ * Registered with LocalBroadcastManager using BleAction.getIntentFilter().
+ * Mirrors CyanBridge's MyBluetoothReceiver exactly.
  */
-class CyanBleReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        // SDK fires LocalBroadcast intents for BLE state changes.
-        // MainActivity handles connection state via EventBus subscription.
+class CyanBleReceiver : QCBluetoothCallbackCloneReceiver() {
+
+    override fun connectStatue(device: BluetoothDevice?, connected: Boolean) {
+        Log.d("CyanGem_BLE", "connectStatue: connected=$connected device=${device?.address}")
+        if (device != null && connected) {
+            device.name?.let { DeviceManager.getInstance().deviceName = it }
+        } else {
+            EventBus.getDefault().post(BleConnectionEvent(false))
+        }
+    }
+
+    override fun onServiceDiscovered() {
+        Log.d("CyanGem_BLE", "onServiceDiscovered — enabling data channel")
+        // CRITICAL: must call initEnable() so commands work after connection
+        LargeDataHandler.getInstance().initEnable()
+        BleOperateManager.getInstance().isReady = true
+        EventBus.getDefault().post(BleConnectionEvent(true))
+    }
+
+    override fun onCharacteristicChange(address: String?, uuid: String?, data: ByteArray?) {
+        // BLE data received — SDK handles routing internally
+    }
+
+    override fun onCharacteristicRead(uuid: String?, data: ByteArray?) {
+        // Version info etc
     }
 }
+
+/** Posted via EventBus when BLE connection state changes */
+data class BleConnectionEvent(val connected: Boolean)

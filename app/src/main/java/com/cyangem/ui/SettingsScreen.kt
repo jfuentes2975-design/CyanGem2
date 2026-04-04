@@ -115,7 +115,7 @@ fun SettingsScreen(vm: MainViewModel) {
                         ) { Text("Save Key", fontWeight = FontWeight.Bold) }
                         if (uiState.hasApiKey) {
                             OutlinedButton(
-                                onClick = { vm.apiKeyStore.clearApiKey(); vm.showSnackbar("API key removed") }
+                                onClick = { vm.apiKeyStore?.clearApiKey(); vm.showSnackbar("API key removed") }
                             ) { Text("Remove") }
                         }
                     }

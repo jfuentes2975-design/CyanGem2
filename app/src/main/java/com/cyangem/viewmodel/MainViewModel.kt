@@ -2,13 +2,13 @@ package com.cyangem.viewmodel
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.util.Log
 import com.cyangem.media.QueryStrategy
 import com.cyangem.media.WifiDirectManager
 import com.cyangem.ui.VoiceEngine
 import com.cyangem.ui.VoiceState
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.cyangem.ble.BleConstants
 import com.cyangem.ble.BleEvent
 import com.cyangem.ble.ConnectionState
 import com.cyangem.ble.CyanBleManager
@@ -50,44 +50,73 @@ data class UiState(
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    val bleManager    = CyanBleManager(application)
-    val mediaSyncer   = MediaSyncManager(application)
-    val apiKeyStore   = ApiKeyStore(application)
-    val gemsRepo      = GemsRepository(application)
+    // ── LAZY init — nothing heavy runs until first access ─────────────────────
+    // This prevents any single subsystem crash from killing the entire launch.
+
+    val bleManager by lazy {
+        safeCreate("CyanBleManager") { CyanBleManager(application) }
+    }
+
+    val mediaSyncer by lazy {
+        safeCreate("MediaSyncManager") { MediaSyncManager(application) }
+    }
+
+    val apiKeyStore by lazy {
+        safeCreate("ApiKeyStore") { ApiKeyStore(application) }
+    }
+
+    val gemsRepo by lazy {
+        safeCreate("GemsRepository") { GemsRepository(application) }
+    }
+
+    val voiceEngine by lazy {
+        safeCreate("VoiceEngine") { VoiceEngine(application) }
+    }
+
+    val wifiManager by lazy {
+        safeCreate("WifiDirectManager") { WifiDirectManager(application) }
+    }
 
     private var geminiEngine: GeminiEngine? = null
-    val voiceEngine = VoiceEngine(application)
-    val wifiManager = WifiDirectManager(application)
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     init {
-        observeBleState()
-        observeSyncProgress()
-        refreshGems()
-        checkApiKey()
-        initVoice()
-        updateQueryStrategy()
+        // Start subsystems only after ViewModel is constructed.
+        // Each call is guarded — a failure in one does not affect others.
+        runCatching { observeBleState() }.onFailure { Log.e("CyanGem", "observeBleState failed", it) }
+        runCatching { observeSyncProgress() }.onFailure { Log.e("CyanGem", "observeSync failed", it) }
+        runCatching { refreshGems() }.onFailure { Log.e("CyanGem", "refreshGems failed", it) }
+        runCatching { checkApiKey() }.onFailure { Log.e("CyanGem", "checkApiKey failed", it) }
+        runCatching { initVoice() }.onFailure { Log.e("CyanGem", "initVoice failed", it) }
+        runCatching { updateQueryStrategy() }.onFailure { Log.e("CyanGem", "updateQueryStrategy failed", it) }
+    }
+
+    /** Safely create a subsystem — logs failure, returns null on error */
+    private fun <T> safeCreate(name: String, block: () -> T): T? {
+        return runCatching(block)
+            .onFailure { Log.e("CyanGem", "Init failed: $name — ${it.message}", it) }
+            .getOrNull()
     }
 
     // ── Setup / API key ───────────────────────────────────────────────────────
 
     private fun checkApiKey() {
-        val hasKey = apiKeyStore.hasApiKey()
+        val hasKey = apiKeyStore?.hasApiKey() == true
         _uiState.value = _uiState.value.copy(hasApiKey = hasKey)
         if (hasKey) initGemini()
     }
 
     fun saveApiKey(key: String) {
-        apiKeyStore.setApiKey(key)
+        apiKeyStore?.setApiKey(key)
         _uiState.value = _uiState.value.copy(hasApiKey = true)
         initGemini()
         showSnackbar("API key saved")
     }
 
     private fun initGemini(gem: Gem? = _uiState.value.activeGem) {
-        val key = apiKeyStore.getApiKey() ?: return
+        val key = apiKeyStore?.getApiKey() ?: return
         geminiEngine = if (gem != null) {
             GeminiEngine.createForGem(key, gem)
         } else {
@@ -98,28 +127,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ── BLE ───────────────────────────────────────────────────────────────────
 
     private fun observeBleState() {
+        val ble = bleManager ?: return
         viewModelScope.launch {
-            bleManager.connectionState.collect { state ->
+            ble.connectionState.collect { state ->
                 _uiState.value = _uiState.value.copy(connectionState = state)
             }
         }
         viewModelScope.launch {
-            bleManager.scannedDevices.collect { devices ->
+            ble.scannedDevices.collect { devices ->
                 _uiState.value = _uiState.value.copy(scannedDevices = devices)
             }
         }
         viewModelScope.launch {
-            bleManager.glassesStatus.collect { status ->
+            ble.glassesStatus.collect { status ->
                 _uiState.value = _uiState.value.copy(glassesStatus = status)
             }
         }
         viewModelScope.launch {
-            bleManager.discoveredChars.collect { chars ->
+            ble.discoveredChars.collect { chars ->
                 _uiState.value = _uiState.value.copy(discoveredChars = chars)
             }
         }
         viewModelScope.launch {
-            bleManager.events.collect { event ->
+            ble.events.collect { event ->
                 event ?: return@collect
                 _uiState.value = _uiState.value.copy(lastBleEvent = event)
                 handleBleEvent(event)
@@ -130,7 +160,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun handleBleEvent(event: BleEvent) {
         when (event) {
             is BleEvent.AiPhotoRequested -> {
-                // Glasses AI button pressed → download latest photo → send to Gemini
                 showSnackbar("📷 Analyzing with Gemini…")
                 analyzeLatestGlassesPhoto()
             }
@@ -144,32 +173,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun startScan() = bleManager.startScan()
-    fun stopScan() = bleManager.stopScan()
+    fun startScan() = bleManager?.startScan()
+    fun stopScan() = bleManager?.stopScan()
     fun connectByMac(mac: String) {
         _uiState.value = _uiState.value.copy(savedMac = mac)
-        bleManager.connectByMac(mac)
+        bleManager?.connectByMac(mac)
     }
-    fun disconnect() = bleManager.disconnect()
+    fun disconnect() = bleManager?.disconnect()
 
     fun connectSavedMac() {
         val mac = _uiState.value.savedMac
-        if (mac.isNotBlank()) bleManager.connectByMac(mac)
+        if (mac.isNotBlank()) bleManager?.connectByMac(mac)
         else showSnackbar("No saved glasses MAC address")
     }
 
-    fun takePhoto() = bleManager.takePhoto()
-    fun startVideo() = bleManager.startVideo()
-    fun stopVideo() = bleManager.stopVideo()
-    fun startAudio() = bleManager.startAudio()
-    fun stopAudio() = bleManager.stopAudio()
-    fun requestBattery() = bleManager.requestBattery()
+    fun takePhoto() = bleManager?.takePhoto()
+    fun startVideo() = bleManager?.startVideo()
+    fun stopVideo() = bleManager?.stopVideo()
+    fun startAudio() = bleManager?.startAudio()
+    fun stopAudio() = bleManager?.stopAudio()
+    fun requestBattery() = bleManager?.requestBattery()
+
+    fun updateConnectionState(connected: Boolean) {
+        bleManager?.updateConnectionState(connected)
+    }
 
     // ── Media sync ────────────────────────────────────────────────────────────
 
     private fun observeSyncProgress() {
+        val syncer = mediaSyncer ?: return
         viewModelScope.launch {
-            mediaSyncer.syncProgress.collect { progress ->
+            syncer.syncProgress.collect { progress ->
                 _uiState.value = _uiState.value.copy(syncProgress = progress)
                 if (!progress.isRunning && progress.downloadedFiles > 0 && progress.error == null) {
                     showSnackbar("✅ Synced ${progress.downloadedFiles} file(s) to Gallery")
@@ -179,7 +213,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun syncMedia() {
-        viewModelScope.launch { mediaSyncer.syncAllMedia() }
+        viewModelScope.launch { mediaSyncer?.syncAllMedia() }
     }
 
     // ── Gemini chat ───────────────────────────────────────────────────────────
@@ -226,13 +260,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ── Vision — auto-triggered by glasses AI button ──────────────────────────
-
     fun analyzeLatestGlassesPhoto(customPrompt: String? = null) {
         val engine = geminiEngine ?: return
+        val syncer = mediaSyncer ?: return
         _uiState.value = _uiState.value.copy(isGeminiThinking = true)
         viewModelScope.launch {
-            val bitmap = mediaSyncer.downloadLatestPhoto()
+            val bitmap = syncer.downloadLatestPhoto()
             if (bitmap == null) {
                 _uiState.value = _uiState.value.copy(
                     isGeminiThinking = false,
@@ -242,9 +275,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             val prompt = customPrompt ?: GeminiEngine.DEFAULT_IMAGE_PROMPT
             val userMsg = ChatMessage(role = "user", text = "📷 [Photo from glasses] $prompt")
-            _uiState.value = _uiState.value.copy(
-                chatMessages = _uiState.value.chatMessages + userMsg
-            )
+            _uiState.value = _uiState.value.copy(chatMessages = _uiState.value.chatMessages + userMsg)
             when (val result = engine.analyzeImage(bitmap, prompt)) {
                 is GeminiResult.Success -> {
                     val modelMsg = ChatMessage(role = "model", text = result.text)
@@ -267,17 +298,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ── Voice ─────────────────────────────────────────────────────────────────
 
     private fun initVoice() {
-        voiceEngine.onWakeWord = {
-            startVoiceQuery()
-        }
-        voiceEngine.onResult = { text ->
+        val voice = voiceEngine ?: return
+        voice.onWakeWord = { startVoiceQuery() }
+        voice.onResult = { text ->
             _uiState.value = _uiState.value.copy(isListening = false)
             sendMessage(text)
-            // Speak response when ready
             observeAndSpeakNextResponse()
         }
         viewModelScope.launch {
-            voiceEngine.voiceState.collect { state ->
+            voice.voiceState.collect { state ->
                 _uiState.value = _uiState.value.copy(
                     voiceState = state,
                     isListening = state is VoiceState.Listening
@@ -287,33 +316,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startVoiceQuery() {
-        if (!apiKeyStore.hasApiKey()) {
+        if (apiKeyStore?.hasApiKey() != true) {
             showSnackbar("Add Gemini API key in Settings first")
             return
         }
-        voiceEngine.startListening()
+        voiceEngine?.startListening()
         showSnackbar("🎙 Listening…")
     }
 
-    fun stopVoiceQuery() {
-        voiceEngine.stopListening()
-    }
+    fun stopVoiceQuery() = voiceEngine?.stopListening()
 
     fun updateQueryStrategy() {
-        _uiState.value = _uiState.value.copy(
-            queryStrategy = wifiManager.getQueryStrategy()
-        )
+        val strategy = wifiManager?.getQueryStrategy() ?: QueryStrategy.USE_PHONE_CAMERA
+        _uiState.value = _uiState.value.copy(queryStrategy = strategy)
     }
 
-    /**
-     * "What am I looking at?" — smart routing:
-     * Indoors (home Wi-Fi) → phone camera
-     * Outdoors (mobile data) → glasses Wi-Fi sync
-     */
     fun whatAmILookingAt(capturePhoneCamera: (() -> Bitmap?)? = null) {
         updateQueryStrategy()
-        val strategy = _uiState.value.queryStrategy
-        when (strategy) {
+        when (_uiState.value.queryStrategy) {
             QueryStrategy.USE_PHONE_CAMERA -> {
                 val bitmap = capturePhoneCamera?.invoke()
                 if (bitmap != null) {
@@ -334,9 +354,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val engine = geminiEngine ?: return
         _uiState.value = _uiState.value.copy(isGeminiThinking = true)
         val userMsg = ChatMessage(role = "user", text = "📷 $prompt")
-        _uiState.value = _uiState.value.copy(
-            chatMessages = _uiState.value.chatMessages + userMsg
-        )
+        _uiState.value = _uiState.value.copy(chatMessages = _uiState.value.chatMessages + userMsg)
         viewModelScope.launch {
             when (val result = engine.analyzeImage(bitmap, prompt)) {
                 is GeminiResult.Success -> {
@@ -345,7 +363,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         chatMessages = _uiState.value.chatMessages + modelMsg,
                         isGeminiThinking = false
                     )
-                    voiceEngine.speak(result.text)
+                    voiceEngine?.speak(result.text)
                 }
                 is GeminiResult.Error -> {
                     _uiState.value = _uiState.value.copy(
@@ -360,7 +378,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun observeAndSpeakNextResponse() {
         viewModelScope.launch {
-            // Wait for the next model message and speak it
             val before = _uiState.value.chatMessages.size
             var waited = 0
             while (waited < 30) {
@@ -368,7 +385,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 waited++
                 val msgs = _uiState.value.chatMessages
                 if (msgs.size > before && msgs.last().role == "model") {
-                    voiceEngine.speak(msgs.last().text)
+                    voiceEngine?.speak(msgs.last().text)
                     break
                 }
             }
@@ -381,14 +398,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             geminiError = null,
             streamingText = ""
         )
-        // Re-init engine to clear chat history
         initGemini()
     }
 
     // ── Gems ──────────────────────────────────────────────────────────────────
 
     fun refreshGems() {
-        val gems = gemsRepo.getGems()
+        val repo = gemsRepo ?: return
+        val gems = repo.getGems()
         val active = _uiState.value.activeGem ?: gems.firstOrNull { it.isDefault }
         _uiState.value = _uiState.value.copy(gems = gems, activeGem = active)
     }
@@ -401,12 +418,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveGem(gem: Gem) {
-        gemsRepo.saveGem(gem)
+        gemsRepo?.saveGem(gem)
         refreshGems()
     }
 
     fun deleteGem(gemId: String) {
-        gemsRepo.deleteGem(gemId)
+        gemsRepo?.deleteGem(gemId)
         if (_uiState.value.activeGem?.id == gemId) {
             val fallback = _uiState.value.gems.firstOrNull { it.isDefault }
             fallback?.let { activateGem(it) }
@@ -425,8 +442,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        voiceEngine.destroy()
+        runCatching { voiceEngine?.destroy() }
+        runCatching { bleManager?.close() }
         super.onCleared()
-        bleManager.close()
     }
 }

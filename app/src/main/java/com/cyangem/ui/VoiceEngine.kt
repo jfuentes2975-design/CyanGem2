@@ -32,86 +32,19 @@ class VoiceEngine(private val context: Context) {
     var onResult: ((String) -> Unit)? = null
     var onWakeWord: (() -> Unit)? = null
 
-    // Wake words that trigger Gemini
-    private val wakeWords = listOf(
-        "hey cyan", "hey gem", "hey gemini", "cyan", "ok cyan"
-    )
+    private val wakeWords = listOf("hey cyan", "hey gem", "hey gemini", "cyan", "ok cyan")
 
-    init {
-        initTts()
-        initRecognizer()
-    }
-
-    // ── Text to Speech ────────────────────────────────────────────────────────
-
-    private fun initTts() {
-        tts = TextToSpeech(context) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.US
-                tts?.setSpeechRate(0.95f)
-                tts?.setPitch(1.0f)
-                ttsReady = true
-            }
-        }
-    }
-
-    fun speak(text: String) {
-        if (!ttsReady) return
-        // Clean markdown symbols before speaking
-        val clean = text
-            .replace(Regex("[*_#`]"), "")
-            .replace(Regex("\\[.*?\\]\\(.*?\\)"), "")
-            .trim()
-        tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "cyangem_tts")
-    }
-
-    fun stopSpeaking() {
-        tts?.stop()
-    }
-
-    // ── Speech Recognition ────────────────────────────────────────────────────
-
-    private fun initRecognizer() {
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) return
-        recognizer = SpeechRecognizer.createSpeechRecognizer(context)
-        recognizer?.setRecognitionListener(recognitionListener)
-    }
-
-    fun startListening() {
-        _voiceState.value = VoiceState.Listening
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
-        }
-        try {
-            recognizer?.startListening(intent)
-        } catch (e: Exception) {
-            _voiceState.value = VoiceState.Error("Mic error: ${e.message}")
-        }
-    }
-
-    fun stopListening() {
-        recognizer?.stopListening()
-        _voiceState.value = VoiceState.Idle
-    }
-
+    // FIX: recognitionListener defined BEFORE init block so it exists when initRecognizer() runs
     private val recognitionListener = object : RecognitionListener {
         override fun onResults(results: Bundle?) {
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val text = matches?.firstOrNull() ?: return
             val lower = text.lowercase()
-
-            // Check for wake word
             if (wakeWords.any { lower.contains(it) }) {
                 onWakeWord?.invoke()
                 _voiceState.value = VoiceState.Idle
                 return
             }
-
             _voiceState.value = VoiceState.Result(text)
             onResult?.invoke(text)
         }
@@ -136,9 +69,7 @@ class VoiceEngine(private val context: Context) {
             _voiceState.value = VoiceState.Error(msg)
         }
 
-        override fun onReadyForSpeech(params: Bundle?) {
-            _voiceState.value = VoiceState.Listening
-        }
+        override fun onReadyForSpeech(params: Bundle?) { _voiceState.value = VoiceState.Listening }
         override fun onBeginningOfSpeech() {}
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
@@ -146,8 +77,67 @@ class VoiceEngine(private val context: Context) {
         override fun onEvent(eventType: Int, params: Bundle?) {}
     }
 
+    init {
+        // Now safe — recognitionListener is already initialized above
+        initTts()
+        initRecognizer()
+    }
+
+    // ── TTS ───────────────────────────────────────────────────────────────────
+
+    private fun initTts() {
+        tts = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = Locale.US
+                tts?.setSpeechRate(0.95f)
+                tts?.setPitch(1.0f)
+                ttsReady = true
+            }
+        }
+    }
+
+    fun speak(text: String) {
+        if (!ttsReady) return
+        val clean = text
+            .replace(Regex("[*_#`]"), "")
+            .replace(Regex("\\[.*?\\]\\(.*?\\)"), "")
+            .trim()
+        tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "cyangem_tts")
+    }
+
+    fun stopSpeaking() = tts?.stop()
+
+    // ── Recognition ───────────────────────────────────────────────────────────
+
+    private fun initRecognizer() {
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) return
+        recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+        recognizer?.setRecognitionListener(recognitionListener)
+    }
+
+    fun startListening() {
+        _voiceState.value = VoiceState.Listening
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+        }
+        try {
+            recognizer?.startListening(intent)
+        } catch (e: Exception) {
+            _voiceState.value = VoiceState.Error("Mic error: ${e.message}")
+        }
+    }
+
+    fun stopListening() {
+        recognizer?.stopListening()
+        _voiceState.value = VoiceState.Idle
+    }
+
     fun destroy() {
-        recognizer?.destroy()
-        tts?.shutdown()
+        runCatching { recognizer?.destroy() }
+        runCatching { tts?.shutdown() }
     }
 }
