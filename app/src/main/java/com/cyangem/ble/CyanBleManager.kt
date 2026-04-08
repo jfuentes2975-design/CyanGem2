@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import com.oudmon.ble.base.bluetooth.BleOperateManager
+import com.oudmon.ble.base.communication.ILargeDataImageResponse
 import com.oudmon.ble.base.communication.LargeDataHandler
 import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyListener
 import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyRsp
@@ -43,6 +44,9 @@ sealed class BleEvent {
     data class MediaCountUpdate(val photos: Int, val videos: Int, val audio: Int) : BleEvent()
     data class VersionInfo(val firmware: String) : BleEvent()
     data class Error(val message: String) : BleEvent()
+    // FIX: New event — fired when a complete JPEG is received from the glasses via BLE.
+    // This replaces the broken Wi-Fi HTTP photo download path.
+    data class PhotoReceived(val jpeg: ByteArray) : BleEvent()
 }
 
 class CyanBleManager(private val context: Context) {
@@ -241,6 +245,38 @@ class CyanBleManager(private val context: Context) {
             mainHandler.postDelayed({ requestBattery(); requestMediaCount() }, 1000)
             ConnectionState.CONNECTED
         } else ConnectionState.DISCONNECTED
+    }
+
+    /**
+     * FIX: Fetch the latest photo from the glasses over BLE.
+     *
+     * Uses LargeDataHandler.getPictureThumbnails() which sends a sync request to the glasses.
+     * The glasses respond with the latest photo in chunks via BLE notify.
+     * Each chunk arrives via ILargeDataImageResponse.parseData(cmdType, isLast, data).
+     * When isLast=true, all chunks are assembled into a complete JPEG and delivered via [onResult].
+     *
+     * [onResult] is always called on the main thread.
+     * [onResult] receives null if no photo is available or the transfer fails.
+     *
+     * This replaces the broken Wi-Fi HTTP download path entirely.
+     */
+    fun fetchLatestPhoto(onResult: (ByteArray?) -> Unit) {
+        val chunks = mutableListOf<ByteArray>()
+        LargeDataHandler.getInstance().getPictureThumbnails(
+            object : ILargeDataImageResponse {
+                override fun parseData(cmdType: Int, isLast: Boolean, data: ByteArray?) {
+                    if (data != null && data.isNotEmpty()) {
+                        chunks.add(data)
+                    }
+                    if (isLast) {
+                        val jpeg = chunks.fold(byteArrayOf()) { acc, b -> acc + b }
+                        mainHandler.post {
+                            onResult(if (jpeg.isEmpty()) null else jpeg)
+                        }
+                    }
+                }
+            }
+        )
     }
 
     fun close() {

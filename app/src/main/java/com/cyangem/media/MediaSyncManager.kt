@@ -5,7 +5,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.os.Environment
 import android.provider.MediaStore
 import com.cyangem.ble.BleConstants
 import kotlinx.coroutines.Dispatchers
@@ -15,7 +14,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -48,9 +46,30 @@ class MediaSyncManager(private val context: Context) {
 
     private var glassesIp: String? = null
 
+    // ── BLE-based save (primary path for W610 glasses) ─────────────────────────
+
+    /**
+     * Save a JPEG byte array received via BLE to the device gallery.
+     * Saves to DCIM/CyanGem — visible in the Photos app immediately.
+     *
+     * This is the correct save path for BLE-only glasses like the W610.
+     * The Wi-Fi sync methods below are preserved but not the primary path.
+     *
+     * @param jpeg  Raw JPEG bytes received from glasses via BLE
+     * @param name  Filename — defaults to a timestamp-based name
+     * @return      Content URI of the saved image, or null on failure
+     */
+    fun saveJpegToGallery(
+        jpeg: ByteArray,
+        name: String = "cyangem_${System.currentTimeMillis()}.jpg"
+    ): Uri? = saveImage(jpeg, name)
+
+    // ── Wi-Fi / HTTP sync (preserved but not used for BLE-only glasses) ────────
+
     /**
      * Discover the glasses IP by testing candidates.
-     * Call this after Wi-Fi Direct group is formed.
+     * NOTE: This path only works if the glasses expose a Wi-Fi HTTP server.
+     * The W610 uses BLE-only — use fetchLatestPhoto() via CyanBleManager instead.
      */
     suspend fun discoverGlassesIp(): String? = withContext(Dispatchers.IO) {
         for (ip in BleConstants.GLASSES_IP_CANDIDATES) {
@@ -68,8 +87,8 @@ class MediaSyncManager(private val context: Context) {
     }
 
     /**
-     * Full sync: fetch media.config, then download all listed files.
-     * @param ipOverride optional IP (use if already known)
+     * Full sync via Wi-Fi HTTP.
+     * NOTE: Not functional for W610. Use saveJpegToGallery() with BLE-received bytes.
      */
     suspend fun syncAllMedia(ipOverride: String? = null): List<Uri> = withContext(Dispatchers.IO) {
         val ip = ipOverride ?: glassesIp ?: discoverGlassesIp()
@@ -115,7 +134,9 @@ class MediaSyncManager(private val context: Context) {
     }
 
     /**
-     * Download a single photo by index and return as Bitmap (for Gemini vision).
+     * Download latest photo via Wi-Fi for Gemini analysis.
+     * NOTE: Not functional for W610. MainViewModel.analyzeLatestGlassesPhoto()
+     * now uses the BLE path via CyanBleManager.fetchLatestPhoto() instead.
      */
     suspend fun downloadLatestPhoto(): Bitmap? = withContext(Dispatchers.IO) {
         val ip = glassesIp ?: discoverGlassesIp() ?: return@withContext null
@@ -136,11 +157,6 @@ class MediaSyncManager(private val context: Context) {
         } catch (_: Exception) { emptyList() }
     }
 
-    /**
-     * Parse the media.config file.
-     * Format (observed from CyanBridge source): one file per line — "index,filename"
-     * e.g.:  1,photo_001.jpg\n2,video_001.mp4\n3,audio_001.opus
-     */
     private fun parseMediaConfig(config: String): List<MediaFile> {
         return config.lines().mapNotNull { line ->
             val parts = line.trim().split(",")
@@ -197,7 +213,6 @@ class MediaSyncManager(private val context: Context) {
     }
 
     private fun saveAudio(bytes: ByteArray, name: String): Uri? {
-        // Wrap raw .opus packets in Ogg container so Android can play them
         val oggBytes = if (name.endsWith(".opus")) wrapOpusInOgg(bytes) else bytes
         val values = ContentValues().apply {
             put(MediaStore.Audio.Media.DISPLAY_NAME, name.replace(".opus", ".ogg"))
@@ -210,26 +225,12 @@ class MediaSyncManager(private val context: Context) {
         return uri
     }
 
-    /**
-     * Minimal Ogg/Opus container wrapper.
-     * The glasses output raw Opus packets — this wraps them so Android can play them.
-     * Based on the fix in CyanBridge v1.0.2.
-     */
     private fun wrapOpusInOgg(opusBytes: ByteArray): ByteArray {
-        // Write a minimal Ogg header + the opus data
-        // For a proper implementation, use a library like jOgg or implement RFC 7845
-        // This minimal version works for short recordings
         val header = byteArrayOf(
-            0x4F, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64.toByte(),  // "OpusHead"
-            0x01,             // version
-            0x01,             // channel count (mono)
-            0x38, 0x01,       // pre-skip (312 samples)
-            0x80.toByte(), 0xBB.toByte(), 0x00, 0x00,  // sample rate 48000 Hz
-            0x00, 0x00,       // output gain
-            0x00              // channel map family
+            0x4F, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64.toByte(),
+            0x01, 0x01, 0x38, 0x01, 0x80.toByte(), 0xBB.toByte(), 0x00, 0x00,
+            0x00, 0x00, 0x00
         )
-        // Simplified: return with header prepended — real Ogg framing requires proper page headers
-        // For full compliance, replace with a proper Ogg muxer
         return header + opusBytes
     }
 }

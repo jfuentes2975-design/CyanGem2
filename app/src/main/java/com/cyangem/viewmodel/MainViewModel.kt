@@ -2,6 +2,7 @@ package com.cyangem.viewmodel
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import com.cyangem.media.QueryStrategy
 import com.cyangem.media.WifiDirectManager
@@ -22,10 +23,12 @@ import com.cyangem.gemini.GeminiResult
 import com.cyangem.gemini.GemsRepository
 import com.cyangem.media.MediaSyncManager
 import com.cyangem.media.MediaSyncProgress
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class UiState(
     val connectionState: ConnectionState = ConnectionState.IDLE,
@@ -163,7 +166,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showSnackbar("📷 Analyzing with Gemini…")
                 analyzeLatestGlassesPhoto()
             }
-            is BleEvent.PhotoTaken -> showSnackbar("📸 Photo saved")
+            // FIX: PhotoTaken now triggers an auto-save from glasses via BLE.
+            // Previously this only showed a snackbar while the photo sat on the glasses.
+            is BleEvent.PhotoTaken -> {
+                showSnackbar("📸 Photo taken — saving from glasses…")
+                saveLatestGlassesPhoto()
+            }
             is BleEvent.VideoStarted -> showSnackbar("🎥 Recording…")
             is BleEvent.VideoStopped -> showSnackbar("⏹ Recording stopped")
             is BleEvent.AudioStarted -> showSnackbar("🎙 Audio recording…")
@@ -212,8 +220,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * FIX: syncMedia now uses BLE to fetch the latest photo from the glasses
+     * and saves it to DCIM/CyanGem in the device gallery.
+     *
+     * The previous Wi-Fi HTTP sync path is not functional for the W610, which
+     * is a BLE-only device. The Wi-Fi sync code is preserved in MediaSyncManager
+     * for future hardware that may support it.
+     */
     fun syncMedia() {
-        viewModelScope.launch { mediaSyncer?.syncAllMedia() }
+        val ble = bleManager ?: return
+        if (_uiState.value.connectionState != ConnectionState.CONNECTED) {
+            showSnackbar("Connect to glasses first")
+            return
+        }
+        showSnackbar("📡 Fetching photo from glasses…")
+        ble.fetchLatestPhoto { jpeg ->
+            if (jpeg == null || jpeg.isEmpty()) {
+                showSnackbar("No photo available on glasses")
+                return@fetchLatestPhoto
+            }
+            viewModelScope.launch(Dispatchers.IO) {
+                val uri = mediaSyncer?.saveJpegToGallery(jpeg)
+                withContext(Dispatchers.Main) {
+                    if (uri != null) {
+                        showSnackbar("✅ Photo saved to Gallery (DCIM/CyanGem)")
+                    } else {
+                        showSnackbar("Failed to save photo — check storage permissions")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * FIX: Auto-save the latest photo from glasses to gallery after PhotoTaken event.
+     * Called automatically from handleBleEvent when the glasses confirm a photo was taken.
+     */
+    private fun saveLatestGlassesPhoto() {
+        val ble = bleManager ?: return
+        ble.fetchLatestPhoto { jpeg ->
+            if (jpeg == null || jpeg.isEmpty()) return@fetchLatestPhoto
+            viewModelScope.launch(Dispatchers.IO) {
+                val uri = mediaSyncer?.saveJpegToGallery(jpeg)
+                withContext(Dispatchers.Main) {
+                    if (uri != null) {
+                        showSnackbar("✅ Photo saved to Gallery")
+                    }
+                }
+            }
+        }
     }
 
     // ── Gemini chat ───────────────────────────────────────────────────────────
@@ -260,37 +316,64 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * FIX: analyzeLatestGlassesPhoto now fetches the photo over BLE instead of Wi-Fi.
+     *
+     * The previous implementation called mediaSyncer.downloadLatestPhoto() which
+     * tried to HTTP GET from a Wi-Fi IP — never reachable on BLE-only glasses.
+     *
+     * Now: bleManager.fetchLatestPhoto() → JPEG bytes arrive via BLE callback
+     *   → decode to Bitmap → send to Gemini for analysis.
+     */
     fun analyzeLatestGlassesPhoto(customPrompt: String? = null) {
-        val engine = geminiEngine ?: return
-        val syncer = mediaSyncer ?: return
-        _uiState.value = _uiState.value.copy(isGeminiThinking = true)
-        viewModelScope.launch {
-            val bitmap = syncer.downloadLatestPhoto()
+        val engine = geminiEngine ?: run {
+            showSnackbar("Add your Gemini API key in Settings first")
+            return
+        }
+        val ble = bleManager ?: return
+
+        val prompt = customPrompt ?: GeminiEngine.DEFAULT_IMAGE_PROMPT
+        val userMsg = ChatMessage(role = "user", text = "📷 [Photo from glasses] $prompt")
+        _uiState.value = _uiState.value.copy(
+            chatMessages = _uiState.value.chatMessages + userMsg,
+            isGeminiThinking = true
+        )
+        showSnackbar("📡 Fetching photo from glasses via BLE…")
+
+        ble.fetchLatestPhoto { jpeg ->
+            if (jpeg == null || jpeg.isEmpty()) {
+                _uiState.value = _uiState.value.copy(
+                    isGeminiThinking = false,
+                    geminiError = "Could not retrieve photo from glasses — make sure a photo has been taken"
+                )
+                return@fetchLatestPhoto
+            }
+            val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
             if (bitmap == null) {
                 _uiState.value = _uiState.value.copy(
                     isGeminiThinking = false,
-                    geminiError = "Could not download photo from glasses"
+                    geminiError = "Photo data from glasses was invalid"
                 )
-                return@launch
+                return@fetchLatestPhoto
             }
-            val prompt = customPrompt ?: GeminiEngine.DEFAULT_IMAGE_PROMPT
-            val userMsg = ChatMessage(role = "user", text = "📷 [Photo from glasses] $prompt")
-            _uiState.value = _uiState.value.copy(chatMessages = _uiState.value.chatMessages + userMsg)
-            when (val result = engine.analyzeImage(bitmap, prompt)) {
-                is GeminiResult.Success -> {
-                    val modelMsg = ChatMessage(role = "model", text = result.text)
-                    _uiState.value = _uiState.value.copy(
-                        chatMessages = _uiState.value.chatMessages + modelMsg,
-                        isGeminiThinking = false
-                    )
+            viewModelScope.launch {
+                when (val result = engine.analyzeImage(bitmap, prompt)) {
+                    is GeminiResult.Success -> {
+                        val modelMsg = ChatMessage(role = "model", text = result.text)
+                        _uiState.value = _uiState.value.copy(
+                            chatMessages = _uiState.value.chatMessages + modelMsg,
+                            isGeminiThinking = false
+                        )
+                        voiceEngine?.speak(result.text)
+                    }
+                    is GeminiResult.Error -> {
+                        _uiState.value = _uiState.value.copy(
+                            isGeminiThinking = false,
+                            geminiError = result.message
+                        )
+                    }
+                    else -> {}
                 }
-                is GeminiResult.Error -> {
-                    _uiState.value = _uiState.value.copy(
-                        isGeminiThinking = false,
-                        geminiError = result.message
-                    )
-                }
-                else -> {}
             }
         }
     }
@@ -344,7 +427,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             QueryStrategy.USE_GLASSES_WIFI -> {
-                showSnackbar("📡 Syncing from glasses…")
+                showSnackbar("📡 Fetching from glasses…")
                 analyzeLatestGlassesPhoto("What am I looking at? Describe briefly.")
             }
         }
