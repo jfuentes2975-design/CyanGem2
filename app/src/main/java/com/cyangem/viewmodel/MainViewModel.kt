@@ -19,6 +19,7 @@ import com.cyangem.data.ApiKeyStore
 import com.cyangem.gemini.ChatMessage
 import com.cyangem.gemini.Gem
 import com.cyangem.gemini.GeminiEngine
+import com.cyangem.gemini.OpenRouterEngine
 import com.cyangem.gemini.GeminiResult
 import com.cyangem.gemini.GemsRepository
 import com.cyangem.media.MediaSyncManager
@@ -53,7 +54,8 @@ data class UiState(
     val isListening: Boolean = false,
     val queryStrategy: QueryStrategy = QueryStrategy.USE_PHONE_CAMERA,
     val galleryPhotos: List<android.net.Uri> = emptyList(),
-    val isGalleryLoading: Boolean = false
+    val isGalleryLoading: Boolean = false,
+    val activeProvider: String = com.cyangem.data.ApiKeyStore.PROVIDER_OPENROUTER
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -86,6 +88,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private var geminiEngine: GeminiEngine? = null
+    private var openRouterEngine: OpenRouterEngine? = null
+
+    /** Returns whichever engine is currently active based on stored provider preference */
+    private val activeEngine: Any?
+        get() = when (apiKeyStore?.getProvider()) {
+            com.cyangem.data.ApiKeyStore.PROVIDER_OPENROUTER -> openRouterEngine
+            else -> geminiEngine
+        }
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -111,8 +121,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ── Setup / API key ───────────────────────────────────────────────────────
 
     private fun checkApiKey() {
-        val hasKey = apiKeyStore?.hasApiKey() == true
-        _uiState.value = _uiState.value.copy(hasApiKey = hasKey)
+        val store = apiKeyStore ?: return
+        val provider = store.getProvider()
+        val hasKey = when (provider) {
+            com.cyangem.data.ApiKeyStore.PROVIDER_OPENROUTER -> store.hasOpenRouterKey()
+            else -> store.hasApiKey()
+        }
+        _uiState.value = _uiState.value.copy(hasApiKey = hasKey, activeProvider = provider)
         if (hasKey) initGemini()
     }
 
@@ -120,16 +135,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         apiKeyStore?.setApiKey(key)
         _uiState.value = _uiState.value.copy(hasApiKey = true)
         initGemini()
-        showSnackbar("API key saved")
+        showSnackbar("Gemini API key saved")
+    }
+
+    fun saveOpenRouterKey(key: String) {
+        apiKeyStore?.setOpenRouterKey(key)
+        apiKeyStore?.setProvider(com.cyangem.data.ApiKeyStore.PROVIDER_OPENROUTER)
+        _uiState.value = _uiState.value.copy(
+            hasApiKey = true,
+            activeProvider = com.cyangem.data.ApiKeyStore.PROVIDER_OPENROUTER
+        )
+        initGemini()
+        showSnackbar("✅ OpenRouter key saved — using free AI")
+    }
+
+    fun setProvider(provider: String) {
+        apiKeyStore?.setProvider(provider)
+        _uiState.value = _uiState.value.copy(activeProvider = provider)
+        initGemini()
+        val name = if (provider == com.cyangem.data.ApiKeyStore.PROVIDER_OPENROUTER)
+            "OpenRouter (Free)" else "Gemini"
+        showSnackbar("Switched to $name")
     }
 
     private fun initGemini(gem: Gem? = _uiState.value.activeGem) {
-        val key = apiKeyStore?.getApiKey() ?: return
-        geminiEngine = if (gem != null) {
-            GeminiEngine.createForGem(key, gem)
-        } else {
-            GeminiEngine(key)
+        val store = apiKeyStore ?: return
+        // Init OpenRouter engine if key exists
+        store.getOpenRouterKey()?.let { key ->
+            openRouterEngine = if (gem != null) OpenRouterEngine.createForGem(key, gem)
+            else OpenRouterEngine(key)
         }
+        // Init Gemini engine if key exists
+        store.getApiKey()?.let { key ->
+            geminiEngine = if (gem != null) GeminiEngine.createForGem(key, gem)
+            else GeminiEngine(key)
+        }
+        val provider = store.getProvider()
+        _uiState.value = _uiState.value.copy(activeProvider = provider)
     }
 
     // ── BLE ───────────────────────────────────────────────────────────────────
@@ -355,8 +397,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ── Gemini chat ───────────────────────────────────────────────────────────
 
     fun sendMessage(text: String) {
-        val engine = geminiEngine ?: run {
-            showSnackbar("Add your Gemini API key in Settings first")
+        val engine = activeEngine ?: run {
+            showSnackbar("Add an API key in Settings first")
             return
         }
         val userMsg = ChatMessage(role = "user", text = text)
@@ -368,7 +410,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         viewModelScope.launch {
             var fullText = ""
-            engine.sendMessageStream(text).collect { result ->
+            val stream = when (engine) {
+                is OpenRouterEngine -> engine.sendMessageStream(text)
+                is GeminiEngine -> engine.sendMessageStream(text)
+                else -> return@launch
+            }
+            stream.collect { result ->
                 when (result) {
                     is GeminiResult.Streaming -> {
                         fullText += result.chunk
@@ -406,8 +453,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      *   → decode to Bitmap → send to Gemini for analysis.
      */
     fun analyzeLatestGlassesPhoto(customPrompt: String? = null) {
-        val engine = geminiEngine ?: run {
-            showSnackbar("Add your Gemini API key in Settings first")
+        val engine = activeEngine ?: run {
+            showSnackbar("Add an API key in Settings first")
             return
         }
         val ble = bleManager ?: return
@@ -437,7 +484,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@fetchLatestPhoto
             }
             viewModelScope.launch {
-                when (val result = engine.analyzeImage(bitmap, prompt)) {
+                val result = when (engine) { is OpenRouterEngine -> engine.analyzeImage(bitmap, prompt); is GeminiEngine -> engine.analyzeImage(bitmap, prompt); else -> GeminiResult.Error("No engine") }; when (result) {
                     is GeminiResult.Success -> {
                         val modelMsg = ChatMessage(role = "model", text = result.text)
                         _uiState.value = _uiState.value.copy(
@@ -479,8 +526,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startVoiceQuery() {
-        if (apiKeyStore?.hasApiKey() != true) {
-            showSnackbar("Add Gemini API key in Settings first")
+        if (activeEngine == null) {
+            showSnackbar("Add an API key in Settings first")
             return
         }
         voiceEngine?.startListening()
@@ -514,12 +561,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun analyzeImageBitmap(bitmap: Bitmap, prompt: String = "What am I looking at?") {
-        val engine = geminiEngine ?: return
+        val engine = activeEngine ?: return
         _uiState.value = _uiState.value.copy(isGeminiThinking = true)
         val userMsg = ChatMessage(role = "user", text = "📷 $prompt")
         _uiState.value = _uiState.value.copy(chatMessages = _uiState.value.chatMessages + userMsg)
         viewModelScope.launch {
-            when (val result = engine.analyzeImage(bitmap, prompt)) {
+            val result = when (engine) { is OpenRouterEngine -> engine.analyzeImage(bitmap, prompt); is GeminiEngine -> engine.analyzeImage(bitmap, prompt); else -> GeminiResult.Error("No engine") }; when (result) {
                 is GeminiResult.Success -> {
                     val modelMsg = ChatMessage(role = "model", text = result.text)
                     _uiState.value = _uiState.value.copy(

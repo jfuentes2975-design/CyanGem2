@@ -49,7 +49,40 @@ class ApiKeyStore(context: Context) {
         prefs.edit().remove(KEY_GEMINI_API).apply()
     }
 
+    // ── OpenRouter ────────────────────────────────────────────────────────────
+
+    fun setOpenRouterKey(key: String) {
+        prefs.edit().putString(KEY_OPENROUTER_API, key.trim()).apply()
+    }
+
+    fun getOpenRouterKey(): String? {
+        return runCatching { prefs.getString(KEY_OPENROUTER_API, null)?.ifBlank { null } }
+            .getOrNull()
+    }
+
+    fun hasOpenRouterKey(): Boolean = getOpenRouterKey() != null
+
+    fun clearOpenRouterKey() {
+        prefs.edit().remove(KEY_OPENROUTER_API).apply()
+    }
+
+    // ── Provider preference ───────────────────────────────────────────────────
+
+    /** "openrouter" or "gemini" — defaults to openrouter if a key is saved, else gemini */
+    fun setProvider(provider: String) {
+        prefs.edit().putString(KEY_PROVIDER, provider).apply()
+    }
+
+    fun getProvider(): String {
+        return runCatching { prefs.getString(KEY_PROVIDER, null) }.getOrNull()
+            ?: if (hasOpenRouterKey()) PROVIDER_OPENROUTER else PROVIDER_GEMINI
+    }
+
     companion object {
-        private const val KEY_GEMINI_API = "gemini_api_key"
+        private const val KEY_GEMINI_API      = "gemini_api_key"
+        private const val KEY_OPENROUTER_API  = "openrouter_api_key"
+        private const val KEY_PROVIDER        = "ai_provider"
+        const val PROVIDER_GEMINI             = "gemini"
+        const val PROVIDER_OPENROUTER         = "openrouter"
     }
 }

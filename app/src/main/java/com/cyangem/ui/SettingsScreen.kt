@@ -22,6 +22,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.cyangem.data.ApiKeyStore
 import com.cyangem.gemini.GeminiEngine
 import com.cyangem.ui.theme.*
 import com.cyangem.viewmodel.MainViewModel
@@ -32,6 +33,9 @@ fun SettingsScreen(vm: MainViewModel) {
     var apiKeyInput by remember { mutableStateOf("") }
     var apiKeyVisible by remember { mutableStateOf(false) }
     var showApiKeySection by remember { mutableStateOf(!uiState.hasApiKey) }
+    var openRouterKeyInput by remember { mutableStateOf("") }
+    var openRouterKeyVisible by remember { mutableStateOf(false) }
+    val isOpenRouter = uiState.activeProvider == ApiKeyStore.PROVIDER_OPENROUTER
 
     Column(
         modifier = Modifier
@@ -50,6 +54,123 @@ fun SettingsScreen(vm: MainViewModel) {
         Text("CyanGem v1.0.0 • Personal Use", fontSize = 12.sp, color = OnSurfaceMuted,
             modifier = Modifier.padding(horizontal = 16.dp))
         Spacer(Modifier.height(16.dp))
+
+        // ── AI Provider ────────────────────────────────────────────────────────
+        SettingsSection("AI Provider") {
+            // Provider toggle
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                color = SurfaceCard,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // OpenRouter button
+                    Button(
+                        onClick = { vm.setProvider(ApiKeyStore.PROVIDER_OPENROUTER) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isOpenRouter) CyanPrimary else SurfaceElevated,
+                            contentColor = if (isOpenRouter) Color(0xFF003731) else OnSurfaceMuted
+                        ),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("OpenRouter", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Free ✓", fontSize = 10.sp)
+                        }
+                    }
+                    // Gemini button
+                    Button(
+                        onClick = { vm.setProvider(ApiKeyStore.PROVIDER_GEMINI) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (!isOpenRouter) CyanPrimary else SurfaceElevated,
+                            contentColor = if (!isOpenRouter) Color(0xFF003731) else OnSurfaceMuted
+                        ),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Gemini", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Paid", fontSize = 10.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── OpenRouter Key ─────────────────────────────────────────────────────
+        SettingsSection("OpenRouter (Free AI)") {
+            SettingsRow(
+                icon = Icons.Default.Key,
+                iconTint = if (vm.apiKeyStore?.hasOpenRouterKey() == true) SuccessColor else Color(0xFFFFB300),
+                title = "API Key",
+                subtitle = if (vm.apiKeyStore?.hasOpenRouterKey() == true)
+                    "Saved — free tier active" else "Required for OpenRouter",
+            )
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = openRouterKeyInput,
+                    onValueChange = { openRouterKeyInput = it },
+                    label = { Text("Paste OpenRouter key (sk-or-...)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = if (openRouterKeyVisible)
+                        VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = {
+                        IconButton(onClick = { openRouterKeyVisible = !openRouterKeyVisible }) {
+                            Icon(
+                                if (openRouterKeyVisible) Icons.Default.VisibilityOff
+                                else Icons.Default.Visibility,
+                                contentDescription = null, tint = OnSurfaceMuted
+                            )
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = CyanPrimary,
+                        unfocusedBorderColor = Color(0xFF30363D),
+                        focusedTextColor = OnSurface,
+                        unfocusedTextColor = OnSurface,
+                        cursorColor = CyanPrimary
+                    )
+                )
+                Button(
+                    onClick = {
+                        if (openRouterKeyInput.isNotBlank()) {
+                            vm.saveOpenRouterKey(openRouterKeyInput)
+                            openRouterKeyInput = ""
+                        }
+                    },
+                    enabled = openRouterKeyInput.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = CyanPrimary,
+                        contentColor = Color(0xFF003731)
+                    )
+                ) { Text("Save Key", fontWeight = FontWeight.Bold) }
+                Surface(color = Color(0xFF0D1F1A), shape = RoundedCornerShape(8.dp)) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("Get a free key:", fontSize = 11.sp, color = CyanPrimary,
+                            fontWeight = FontWeight.Medium)
+                        Text("1. Go to openrouter.ai", fontSize = 11.sp, color = OnSurfaceMuted)
+                        Text("2. Sign in with Google", fontSize = 11.sp, color = OnSurfaceMuted)
+                        Text("3. Keys → Create Key", fontSize = 11.sp, color = OnSurfaceMuted)
+                        Text("4. Paste above — no billing needed",
+                            fontSize = 11.sp, color = OnSurfaceMuted)
+                    }
+                }
+            }
+        }
 
         // ── Gemini API Key ─────────────────────────────────────────────────────
         SettingsSection("Gemini API") {
