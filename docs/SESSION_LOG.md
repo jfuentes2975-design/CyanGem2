@@ -4,6 +4,46 @@
 
 ---
 
+## SESSION LOG — April 10, 2026 (Session 2)
+**Completed:**
+- Fixed voice pipeline Bug 1: onPartialResults calling startListening() while recognizer active → ERROR_RECOGNIZER_BUSY → silent death. Fixed with wakeWordHandled flag + stopListening() before onWakeWord invoke
+- Fixed voice pipeline Bug 2: No audio cue after wake word. Now speaks "Yes?" via TTS then 700ms delay before startListening()
+- Fixed voice pipeline Bug 3: TTS dropping first speak() call — async init race. Added pendingSpeakQueue flushed when ttsReady fires
+- Confirmed "Yes?" tone IS playing after "Hey Cyan" — TTS + BT audio routing confirmed working
+- Confirmed BLE genuinely connected (photo count 11, video 2, audio 6 loaded correctly)
+- Identified phone silent mode icon visible in screenshots — possible media volume issue
+
+**Decisions made:**
+- One file only changed: VoiceEngine.kt — commit 6e3f148
+- Fresh install required due to signing mismatch on update
+- Diagnostic next step before any more code: check Chat tab for messages after voice query + check Photo button snackbar
+
+**Open items:**
+- Voice query pipeline still broken AFTER wake word — hear "Yes?" but no AI response and no audio
+- Root cause unknown: could be OpenRouter not responding, TTS not speaking response, or permissions on fresh install
+- Need user to check: (1) Chat tab after voice query — any messages? (2) Photo button — any snackbar?
+- Media volume may be at zero despite BT audio working for tone — needs verification
+- Photo button via BLE controls untested — no snackbar reported means BLE command path may be broken
+- Chat history persistence (Sprint 1.2) not built
+- Onboarding, global status, API key validation (Sprints 1.3–1.5) not built
+
+**Next step:** User tests: tap Chat after voice query (any messages?), tap Photo button (any snackbar?), check media volume. Report back before any code changes.
+
+**My preferences noted:**
+- Sparring partner mode — find blindspots, tell the truth, no filler
+- Findings before fixes, no coding before planning
+- Push directly to GitHub, replace only changed files
+- Direct and technical, call out uncertainty explicitly
+
+**Key files/links:**
+- Repo: github.com/jfuentes2975-design/CyanGem2 (private)
+- Session log: github.com/jfuentes2975-design/CyanGem2/blob/main/docs/SESSION_LOG.md
+- GitHub token: expires April 13 2026
+- Latest commit: 6e3f148 (VoiceEngine fix)
+- OpenRouter key: re-entered after fresh install
+
+---
+
 ## SESSION LOG — April 10, 2026
 **Completed:**
 - Built OpenRouterEngine.kt — free AI via llama-3.2-11b-vision-instruct:free, no billing, uses existing OkHttp
