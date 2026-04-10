@@ -6,6 +6,43 @@
 
 ## SESSION LOG — April 10, 2026
 **Completed:**
+- Built OpenRouterEngine.kt — free AI via llama-3.2-11b-vision-instruct:free, no billing, uses existing OkHttp
+- Built in-app photo gallery (GalleryScreen.kt) — grid, tap-to-expand, Ask Gemini per photo, Coil 2.7.0
+- Updated ApiKeyStore, MainViewModel, SettingsScreen for dual-provider support (OpenRouter default / Gemini fallback)
+- Pushed all changes directly to GitHub via token — commits 9f6f2b8, a4916f1, a76f3f6
+- Created master session log at docs/SESSION_LOG.md — auto-updated at End Session, auto-read at Begin Session
+
+**Decisions made:**
+- OpenRouter is the new default free AI provider — Gemini kept as optional paid fallback
+- Session log lives in GitHub repo — Claude pulls and pushes it each session
+- GitHub token expires April 13 — user chose not to revoke early
+
+**Open items:**
+- Wake word "Hey Cyan" triggers recognition but nothing happens after — voice query pipeline broken post-wake
+- No TTS audio response — voice output not firing despite BT audio confirmed working (music plays fine)
+- BLE photo transfer untested end-to-end on live W610
+- Chat history persistence (Sprint 1.2) not built
+- Onboarding, global status, API key validation (Sprints 1.3–1.5) not built
+
+**Next step:** Diagnose voice pipeline — wake word fires but onResult/sendMessage chain is breaking; check VoiceEngine.onResult callback wiring and TTS speak() in MainViewModel; check if OpenRouter response returns but TTS silently fails
+
+**My preferences noted:**
+- Sparring partner mode — find blindspots, tell the truth, no filler
+- Findings before fixes, no coding before planning
+- Push directly to GitHub, replace only changed files
+- Direct and technical, call out uncertainty explicitly
+
+**Key files/links:**
+- Repo: github.com/jfuentes2975-design/CyanGem2 (private)
+- Session log: github.com/jfuentes2975-design/CyanGem2/blob/main/docs/SESSION_LOG.md
+- GitHub token: expires April 13 2026
+- OpenRouter key: saved in app Settings
+- Sprint tracker: docs/CyanGem_Product_Enhancement_Report.md
+
+---
+
+## SESSION LOG — April 10, 2026
+**Completed:**
 - Built OpenRouterEngine.kt — free AI alternative using llama-3.2-11b-vision-instruct:free via OpenRouter REST API (no new dependencies, uses existing OkHttp)
 - Updated ApiKeyStore to store OpenRouter key + provider preference alongside Gemini key
 - Updated MainViewModel with `activeEngine` property routing to OpenRouter or Gemini based on stored preference
