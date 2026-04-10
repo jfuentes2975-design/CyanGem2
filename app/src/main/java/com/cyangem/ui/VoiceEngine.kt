@@ -3,10 +3,13 @@ package com.cyangem.ui
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,6 +29,10 @@ class VoiceEngine(private val context: Context) {
     private var tts: TextToSpeech? = null
     private var ttsReady = false
 
+    // FIX 3: Queue speak requests that arrive before TTS is ready.
+    // TTS init is async — without this, speak() on cold start silently drops.
+    private val pendingSpeakQueue = mutableListOf<String>()
+
     private val _voiceState = MutableStateFlow<VoiceState>(VoiceState.Idle)
     val voiceState: StateFlow<VoiceState> = _voiceState.asStateFlow()
 
@@ -34,17 +41,31 @@ class VoiceEngine(private val context: Context) {
 
     private val wakeWords = listOf("hey cyan", "hey gem", "hey gemini", "cyan", "ok cyan")
 
-    // FIX: recognitionListener defined BEFORE init block so it exists when initRecognizer() runs
+    // FIX 1: Guard flag prevents both onPartialResults AND onResults firing onWakeWord.
+    private var wakeWordHandled = false
+
+    // recognitionListener defined BEFORE init — Kotlin initializes top-down.
     private val recognitionListener = object : RecognitionListener {
+
         override fun onResults(results: Bundle?) {
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val text = matches?.firstOrNull() ?: return
             val lower = text.lowercase()
+
             if (wakeWords.any { lower.contains(it) }) {
-                onWakeWord?.invoke()
-                _voiceState.value = VoiceState.Idle
+                if (!wakeWordHandled) {
+                    Log.d("CyanGem_Voice", "Wake word in onResults: $text")
+                    handleWakeWord()
+                } else {
+                    wakeWordHandled = false
+                    _voiceState.value = VoiceState.Idle
+                }
                 return
             }
+
+            // Actual user query
+            Log.d("CyanGem_Voice", "Query received: $text")
+            wakeWordHandled = false
             _voiceState.value = VoiceState.Result(text)
             onResult?.invoke(text)
         }
@@ -53,8 +74,15 @@ class VoiceEngine(private val context: Context) {
             val partial = partialResults
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.firstOrNull() ?: return
-            if (wakeWords.any { partial.lowercase().contains(it) }) {
-                onWakeWord?.invoke()
+
+            if (!wakeWordHandled && wakeWords.any { partial.lowercase().contains(it) }) {
+                Log.d("CyanGem_Voice", "Wake word in onPartialResults: $partial")
+                // FIX 1: Stop BEFORE invoking onWakeWord.
+                // Previously called startListening() while recognizer was still active
+                // → ERROR_RECOGNIZER_BUSY → silent failure → pipeline dead.
+                wakeWordHandled = true
+                recognizer?.stopListening()
+                handleWakeWord()
             }
         }
 
@@ -64,12 +92,18 @@ class VoiceEngine(private val context: Context) {
                 SpeechRecognizer.ERROR_NETWORK -> "Network error"
                 SpeechRecognizer.ERROR_AUDIO -> "Audio error"
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Mic permission denied"
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy"
                 else -> "Speech error $error"
             }
+            Log.e("CyanGem_Voice", "Recognition error: $msg (code $error)")
+            wakeWordHandled = false
             _voiceState.value = VoiceState.Error(msg)
         }
 
-        override fun onReadyForSpeech(params: Bundle?) { _voiceState.value = VoiceState.Listening }
+        override fun onReadyForSpeech(params: Bundle?) {
+            Log.d("CyanGem_Voice", "Ready for speech")
+            _voiceState.value = VoiceState.Listening
+        }
         override fun onBeginningOfSpeech() {}
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
@@ -78,7 +112,6 @@ class VoiceEngine(private val context: Context) {
     }
 
     init {
-        // Now safe — recognitionListener is already initialized above
         initTts()
         initRecognizer()
     }
@@ -92,17 +125,34 @@ class VoiceEngine(private val context: Context) {
                 tts?.setSpeechRate(0.95f)
                 tts?.setPitch(1.0f)
                 ttsReady = true
+                Log.d("CyanGem_Voice", "TTS ready — flushing ${pendingSpeakQueue.size} queued item(s)")
+                // FIX 3: Flush queued speak calls
+                pendingSpeakQueue.forEach { speakInternal(it) }
+                pendingSpeakQueue.clear()
+            } else {
+                Log.e("CyanGem_Voice", "TTS init failed: status $status")
             }
         }
     }
 
     fun speak(text: String) {
-        if (!ttsReady) return
+        if (text.isBlank()) return
         val clean = text
             .replace(Regex("[*_#`]"), "")
             .replace(Regex("\\[.*?\\]\\(.*?\\)"), "")
             .trim()
-        tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "cyangem_tts")
+        if (clean.isBlank()) return
+        if (!ttsReady) {
+            Log.d("CyanGem_Voice", "TTS not ready — queuing: ${clean.take(40)}")
+            pendingSpeakQueue.add(clean)
+            return
+        }
+        speakInternal(clean)
+    }
+
+    private fun speakInternal(text: String) {
+        Log.d("CyanGem_Voice", "TTS speaking: ${text.take(60)}")
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "cyangem_tts")
     }
 
     fun stopSpeaking() = tts?.stop()
@@ -110,12 +160,31 @@ class VoiceEngine(private val context: Context) {
     // ── Recognition ───────────────────────────────────────────────────────────
 
     private fun initRecognizer() {
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) return
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            Log.e("CyanGem_Voice", "Speech recognition not available")
+            return
+        }
         recognizer = SpeechRecognizer.createSpeechRecognizer(context)
         recognizer?.setRecognitionListener(recognitionListener)
+        Log.d("CyanGem_Voice", "Recognizer initialized")
+    }
+
+    /**
+     * FIX 2: Speak audio confirmation before starting query session.
+     * Previously the app silently started listening after wake — user had no
+     * idea the mic was open. Now speaks "Yes?" then starts listening after
+     * a 700ms delay (enough for TTS to finish the single word).
+     */
+    private fun handleWakeWord() {
+        _voiceState.value = VoiceState.Idle
+        speak("Yes?")
+        Handler(Looper.getMainLooper()).postDelayed({
+            onWakeWord?.invoke()
+        }, 700L)
     }
 
     fun startListening() {
+        wakeWordHandled = false
         _voiceState.value = VoiceState.Listening
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -126,7 +195,9 @@ class VoiceEngine(private val context: Context) {
         }
         try {
             recognizer?.startListening(intent)
+            Log.d("CyanGem_Voice", "startListening called")
         } catch (e: Exception) {
+            Log.e("CyanGem_Voice", "startListening failed: ${e.message}")
             _voiceState.value = VoiceState.Error("Mic error: ${e.message}")
         }
     }
@@ -139,5 +210,6 @@ class VoiceEngine(private val context: Context) {
     fun destroy() {
         runCatching { recognizer?.destroy() }
         runCatching { tts?.shutdown() }
+        pendingSpeakQueue.clear()
     }
 }
