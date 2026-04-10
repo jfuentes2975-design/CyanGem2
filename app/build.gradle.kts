@@ -66,6 +66,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.gson)
+    implementation(libs.coil.compose)
 
     // EventBus (required by the glasses SDK)
     implementation("org.greenrobot:eventbus:3.3.1")

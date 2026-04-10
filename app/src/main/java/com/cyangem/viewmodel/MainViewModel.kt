@@ -29,6 +29,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.net.Uri
+import android.provider.MediaStore
+import android.os.Build
 
 data class UiState(
     val connectionState: ConnectionState = ConnectionState.IDLE,
@@ -48,7 +51,9 @@ data class UiState(
     val lastBleEvent: BleEvent? = null,
     val voiceState: VoiceState = VoiceState.Idle,
     val isListening: Boolean = false,
-    val queryStrategy: QueryStrategy = QueryStrategy.USE_PHONE_CAMERA
+    val queryStrategy: QueryStrategy = QueryStrategy.USE_PHONE_CAMERA,
+    val galleryPhotos: List<android.net.Uri> = emptyList(),
+    val isGalleryLoading: Boolean = false
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -215,6 +220,81 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.value = _uiState.value.copy(syncProgress = progress)
                 if (!progress.isRunning && progress.downloadedFiles > 0 && progress.error == null) {
                     showSnackbar("✅ Synced ${progress.downloadedFiles} file(s) to Gallery")
+                    // Refresh gallery after sync completes so new photos appear immediately
+                    loadGalleryPhotos()
+                }
+            }
+        }
+    }
+
+    // ── Gallery ───────────────────────────────────────────────────────────────
+
+    /**
+     * Query MediaStore for all photos saved to DCIM/CyanGem, newest first.
+     * Called on tab open and after every sync completion.
+     */
+    fun loadGalleryPhotos() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(isGalleryLoading = true)
+            val uris = mutableListOf<Uri>()
+            val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            val projection = arrayOf(
+                MediaStore.Images.Media._ID,
+                MediaStore.Images.Media.DATE_ADDED
+            )
+            val selection = "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?"
+            val selectionArgs = arrayOf("DCIM/CyanGem%")
+            val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+
+            try {
+                getApplication<android.app.Application>().contentResolver.query(
+                    collection, projection, selection, selectionArgs, sortOrder
+                )?.use { cursor ->
+                    val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getLong(idCol)
+                        uris.add(Uri.withAppendedPath(collection, id.toString()))
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("CyanGem", "Gallery query failed: ${e.message}", e)
+            }
+
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    galleryPhotos = uris,
+                    isGalleryLoading = false
+                )
+            }
+        }
+    }
+
+    /**
+     * Analyze a specific gallery photo URI with Gemini.
+     * Decodes URI → Bitmap then reuses the existing analyzeImageBitmap() path.
+     */
+    fun analyzeGalleryPhoto(uri: Uri, customPrompt: String? = null) {
+        val prompt = customPrompt ?: "Describe what you see in this photo in detail."
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    android.graphics.ImageDecoder.decodeBitmap(
+                        android.graphics.ImageDecoder.createSource(
+                            getApplication<android.app.Application>().contentResolver, uri
+                        )
+                    ) { decoder, _, _ -> decoder.isMutableRequired = true }
+                } else {
+                    @Suppress("DEPRECATION")
+                    android.provider.MediaStore.Images.Media.getBitmap(
+                        getApplication<android.app.Application>().contentResolver, uri
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    analyzeImageBitmap(bitmap, prompt)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    showSnackbar("⚠️ Could not load photo for analysis")
                 }
             }
         }

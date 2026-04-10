@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stars
 import androidx.compose.material3.*
@@ -23,6 +24,7 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
     object Glasses  : Screen("glasses",  "Glasses",  Icons.Default.BluetoothSearching)
     object Chat     : Screen("chat",     "Chat",     Icons.Default.Chat)
     object Gems     : Screen("gems",     "Gems",     Icons.Default.Stars)
+    object Gallery  : Screen("gallery",  "Gallery",  Icons.Default.PhotoLibrary)
     object Settings : Screen("settings", "Settings", Icons.Default.Settings)
 }
 
@@ -30,6 +32,7 @@ val bottomNavItems = listOf(
     Screen.Glasses,
     Screen.Chat,
     Screen.Gems,
+    Screen.Gallery,
     Screen.Settings
 )
 
@@ -81,6 +84,7 @@ fun CyanGemApp(vm: MainViewModel = viewModel()) {
             composable(Screen.Glasses.route)  { GlassesScreen(vm) }
             composable(Screen.Chat.route)     { ChatScreen(vm) }
             composable(Screen.Gems.route)     { GemsScreen(vm) }
+            composable(Screen.Gallery.route)  { GalleryScreen(vm) }
             composable(Screen.Settings.route) { SettingsScreen(vm) }
         }
     }
