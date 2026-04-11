@@ -153,18 +153,31 @@ class OpenRouterEngine(
         val responseBody = response.body?.string()
             ?: throw Exception("Empty response from OpenRouter")
 
-        if (!response.isSuccessful) {
-            val errorMsg = runCatching {
-                JSONObject(responseBody).optJSONObject("error")?.optString("message")
-            }.getOrNull() ?: "HTTP ${response.code}"
-            throw Exception(errorMsg)
+        // Parse the JSON first regardless of HTTP status
+        // OpenRouter often returns HTTP 200 with {"error": {...}} for model issues
+        val json = runCatching { JSONObject(responseBody) }.getOrNull()
+
+        // Check for error field in body first — covers HTTP 200 + error body pattern
+        json?.optJSONObject("error")?.let { err ->
+            val msg = err.optString("message", "").ifBlank {
+                err.optString("code", "Unknown error")
+            }
+            throw Exception(msg)
         }
 
-        return JSONObject(responseBody)
-            .getJSONArray("choices")
-            .getJSONObject(0)
-            .getJSONObject("message")
-            .getString("content")
+        // Then check HTTP status
+        if (!response.isSuccessful) {
+            throw Exception("HTTP ${response.code}")
+        }
+
+        // Parse successful response
+        return json
+            ?.optJSONArray("choices")
+            ?.optJSONObject(0)
+            ?.optJSONObject("message")
+            ?.optString("content")
+            ?.takeIf { it.isNotBlank() }
+            ?: throw Exception("Empty or malformed response from $modelName")
     }
 
     private fun bitmapToBase64(bitmap: Bitmap): String {
