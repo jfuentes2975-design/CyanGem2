@@ -346,7 +346,7 @@ private fun MediaSyncCard(progress: MediaSyncProgress, onSync: () -> Unit) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Media Sync", fontWeight = FontWeight.SemiBold, color = OnSurface)
             Text(
-                "Connects via Wi-Fi Direct — ensure glasses are in range.",
+                "Syncs photos via Bluetooth — keep glasses nearby during transfer.",
                 fontSize = 12.sp, color = OnSurfaceMuted
             )
 
