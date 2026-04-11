@@ -4,6 +4,48 @@
 
 ---
 
+## SESSION LOG — April 11, 2026
+**Completed:**
+- Diagnosed OpenRouter "No Endpoint found" root cause: HTTP 200 with error body bypassed isSuccessful check, threw JSONException, broke fallback loop
+- Fixed callApi() to parse JSON body first, extract error field before HTTP status check, use null-safe opt* accessors
+- Added model fallback lists: 4 vision models, 4 text models — auto-retries on endpoint failure
+- Added syncAllMedia() to CyanBleManager (was in zip deliveries but never in GitHub repo)
+- Wired syncMedia() in MainViewModel to use full BLE multi-photo sync with progress
+- Ran full pre-release validation: brace/paren balance, logic regression check, thread safety, auth fast-fail
+- Fixed two issues found in validation: readTimeout 60s→15s (240s worst case → 60s), GlassesScreen Wi-Fi Direct subtitle regression
+- All 5 files validated clean — committed b8acdf5
+
+**Decisions made:**
+- readTimeout 15s per model × 4 models = 60s max wait — acceptable for voice UX
+- GlassesScreen subtitle permanently fixed to BLE language, not Wi-Fi
+- Pre-release validation gate to run before every build going forward
+
+**Open items:**
+- AI chat/voice response still untested after this fix — user building and testing
+- BLE photo transfer (sync, auto-save on PhotoTaken) still unverified on live W610
+- Photos count increases on glasses but nothing saves to gallery — BLE transfer pipeline unconfirmed
+- Chat history persistence (Sprint 1.2) not built
+- Onboarding, global status, API key validation (Sprints 1.3–1.5) not built
+- GitHub token expires April 13 2026
+
+**Next step:** User tests build — confirm (1) chat responds after typing, (2) voice gives audio answer after "Hey Cyan", (3) Photo button shows snackbar. Report results before any new code.
+
+**My preferences noted:**
+- Sparring partner mode — find blindspots, tell the truth, no filler
+- Findings before fixes, no coding before planning
+- Run pre-release validation before every build
+- Push directly to GitHub, replace only changed files
+- Direct and technical, call out uncertainty explicitly
+
+**Key files/links:**
+- Repo: github.com/jfuentes2975-design/CyanGem2 (private)
+- Session log: github.com/jfuentes2975-design/CyanGem2/blob/main/docs/SESSION_LOG.md
+- GitHub token: expires April 13 2026
+- Latest commits: eca02b9 (error parsing), 5948492 (fallbacks + BLE sync), b8acdf5 (validation fixes)
+- Sprint tracker: docs/CyanGem_Product_Enhancement_Report.md
+
+---
+
 ## SESSION LOG — April 10, 2026 (Session 2)
 **Completed:**
 - Fixed voice pipeline Bug 1: onPartialResults calling startListening() while recognizer active → ERROR_RECOGNIZER_BUSY → silent death. Fixed with wakeWordHandled flag + stopListening() before onWakeWord invoke
