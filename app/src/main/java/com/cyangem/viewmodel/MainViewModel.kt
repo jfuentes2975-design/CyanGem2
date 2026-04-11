@@ -356,19 +356,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             showSnackbar("Connect to glasses first")
             return
         }
-        showSnackbar("📡 Fetching photo from glasses…")
-        ble.fetchLatestPhoto { jpeg ->
-            if (jpeg == null || jpeg.isEmpty()) {
-                showSnackbar("No photo available on glasses")
-                return@fetchLatestPhoto
-            }
+        if (_uiState.value.syncProgress.isRunning) {
+            showSnackbar("Sync already in progress")
+            return
+        }
+
+        val expectedTotal = _uiState.value.glassesStatus.photoCount.takeIf { it > 0 } ?: 0
+
+        _uiState.value = _uiState.value.copy(
+            syncProgress = com.cyangem.media.MediaSyncProgress(
+                isRunning = true,
+                totalFiles = expectedTotal,
+                downloadedFiles = 0,
+                currentFile = "Connecting to glasses…"
+            )
+        )
+
+        val savedUris = mutableListOf<android.net.Uri>()
+
+        ble.syncAllMedia { current, total, isLast, jpeg ->
+            // Fires on main thread per CyanBleManager
+            val displayTotal = total.coerceAtLeast(current)
+            _uiState.value = _uiState.value.copy(
+                syncProgress = _uiState.value.syncProgress.copy(
+                    currentFile = "Photo $current of $displayTotal…",
+                    totalFiles = displayTotal
+                )
+            )
             viewModelScope.launch(Dispatchers.IO) {
-                val uri = mediaSyncer?.saveJpegToGallery(jpeg)
+                val name = "cyangem_${System.currentTimeMillis()}.jpg"
+                val uri = mediaSyncer?.saveJpegToGallery(jpeg, name)
                 withContext(Dispatchers.Main) {
-                    if (uri != null) {
-                        showSnackbar("✅ Photo saved to Gallery (DCIM/CyanGem)")
-                    } else {
-                        showSnackbar("Failed to save photo — check storage permissions")
+                    if (uri != null) savedUris.add(uri)
+                    val progress = com.cyangem.media.MediaSyncProgress(
+                        isRunning = !isLast,
+                        totalFiles = displayTotal,
+                        downloadedFiles = current,
+                        currentFile = if (isLast) "" else "Photo $current of $displayTotal…",
+                        lastSavedUris = savedUris.toList()
+                    )
+                    _uiState.value = _uiState.value.copy(syncProgress = progress)
+                    if (isLast) {
+                        val saved = savedUris.size
+                        showSnackbar(
+                            if (saved > 0) "✅ Synced $saved photo(s) to Gallery"
+                            else "⚠️ Sync complete — no photos saved, check permissions"
+                        )
+                        loadGalleryPhotos()
                     }
                 }
             }

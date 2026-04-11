@@ -2,6 +2,7 @@ package com.cyangem.gemini
 
 import android.graphics.Bitmap
 import android.util.Base64
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -18,13 +19,10 @@ import java.util.concurrent.TimeUnit
 /**
  * AI engine backed by OpenRouter — free tier, vision-capable.
  *
- * Uses llama-3.2-11b-vision-instruct by default:
- *   - Free on OpenRouter (no billing required)
- *   - Supports image analysis (glasses photos)
- *   - OpenAI-compatible REST API — no new SDK needed, uses OkHttp already in project
- *
- * API docs: https://openrouter.ai/docs
- * Model: meta-llama/llama-3.2-11b-vision-instruct:free
+ * Uses a fallback model list — if the primary model has no available endpoint,
+ * automatically retries with the next model in the list.
+ * This fixes the "No Endpoint found" error seen when a free model is temporarily
+ * unavailable due to provider load.
  */
 class OpenRouterEngine(
     private val apiKey: String,
@@ -36,7 +34,6 @@ class OpenRouterEngine(
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    // Conversation history — list of {role, content} maps
     private val history = mutableListOf<JSONObject>()
 
     init {
@@ -50,25 +47,23 @@ class OpenRouterEngine(
     suspend fun sendMessage(userText: String): GeminiResult = withContext(Dispatchers.IO) {
         history.add(JSONObject().put("role", "user").put("content", userText))
         return@withContext try {
-            val responseText = callApi(buildMessages())
+            val responseText = callApiWithFallback(buildMessages())
             history.add(JSONObject().put("role", "assistant").put("content", responseText))
             GeminiResult.Success(responseText)
         } catch (e: Exception) {
-            history.removeLastOrNull() // remove the user message if call failed
+            history.removeLastOrNull()
             GeminiResult.Error(e.message ?: "OpenRouter error")
         }
     }
 
-    /** Streaming — OpenRouter supports SSE but for simplicity we emit as single chunk */
     fun sendMessageStream(userText: String): Flow<GeminiResult> = flow {
         when (val result = sendMessage(userText)) {
             is GeminiResult.Success -> {
-                // Emit word by word to simulate streaming feel
                 val words = result.text.split(" ")
-                val sb = StringBuilder()
+                var first = true
                 for (word in words) {
-                    sb.append(if (sb.isEmpty()) word else " $word")
-                    emit(GeminiResult.Streaming(if (sb.isEmpty()) word else " $word"))
+                    val chunk = if (first) { first = false; word } else " $word"
+                    emit(GeminiResult.Streaming(chunk))
                     kotlinx.coroutines.delay(20)
                 }
             }
@@ -88,19 +83,15 @@ class OpenRouterEngine(
                     .put(
                         JSONObject()
                             .put("type", "image_url")
-                            .put(
-                                "image_url",
-                                JSONObject().put("url", "data:image/jpeg;base64,$base64")
-                            )
+                            .put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$base64"))
                     )
                 val messages = JSONArray()
                 if (systemPrompt.isNotBlank()) {
-                    messages.put(
-                        JSONObject().put("role", "system").put("content", systemPrompt)
-                    )
+                    messages.put(JSONObject().put("role", "system").put("content", systemPrompt))
                 }
                 messages.put(JSONObject().put("role", "user").put("content", contentArray))
-                val responseText = callApi(messages)
+                // Vision requires a vision-capable model — use vision fallback list
+                val responseText = callApiWithFallback(messages, visionOnly = true)
                 GeminiResult.Success(responseText)
             } catch (e: Exception) {
                 GeminiResult.Error(e.message ?: "Vision error")
@@ -115,9 +106,37 @@ class OpenRouterEngine(
         return arr
     }
 
-    private fun callApi(messages: JSONArray): String {
+    /**
+     * Try each model in the fallback list until one succeeds.
+     * Stops on first successful response. Only retries on "no endpoint" type errors.
+     */
+    private fun callApiWithFallback(messages: JSONArray, visionOnly: Boolean = false): String {
+        val models = if (visionOnly) VISION_MODEL_FALLBACKS else TEXT_MODEL_FALLBACKS
+        var lastError = "All models unavailable"
+        for (model in models) {
+            try {
+                Log.d("CyanGem_AI", "Trying model: $model")
+                val result = callApi(messages, model)
+                Log.d("CyanGem_AI", "Success with model: $model")
+                return result
+            } catch (e: Exception) {
+                val msg = e.message ?: ""
+                Log.w("CyanGem_AI", "Model $model failed: $msg")
+                lastError = msg
+                // Only continue to next model for endpoint/availability errors
+                // For auth errors, stop immediately
+                if (msg.contains("401") || msg.contains("403") || msg.contains("Invalid API key")) {
+                    throw Exception("API key invalid — check your OpenRouter key in Settings")
+                }
+                // Continue to next model for: no endpoint, 503, timeout, model not found
+            }
+        }
+        throw Exception(lastError)
+    }
+
+    private fun callApi(messages: JSONArray, modelName: String): String {
         val body = JSONObject()
-            .put("model", MODEL_NAME)
+            .put("model", modelName)
             .put("messages", messages)
             .put("max_tokens", 1024)
 
@@ -150,7 +169,6 @@ class OpenRouterEngine(
 
     private fun bitmapToBase64(bitmap: Bitmap): String {
         val stream = ByteArrayOutputStream()
-        // Scale down if too large — OpenRouter has a 5MB base64 limit
         val scaled = if (bitmap.width > 1024 || bitmap.height > 1024) {
             val scale = 1024f / maxOf(bitmap.width, bitmap.height)
             Bitmap.createScaledBitmap(
@@ -165,7 +183,25 @@ class OpenRouterEngine(
     }
 
     companion object {
-        const val MODEL_NAME = "meta-llama/llama-3.2-11b-vision-instruct:free"
+        // Vision-capable free models, tried in order until one responds
+        val VISION_MODEL_FALLBACKS = listOf(
+            "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "google/gemma-3-12b-it:free",
+            "google/gemma-3-4b-it:free",
+            "moonshotai/kimi-vl-a3b-thinking:free"
+        )
+
+        // Text-only free models for chat (faster, more reliable)
+        val TEXT_MODEL_FALLBACKS = listOf(
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "google/gemma-3-12b-it:free",
+            "google/gemma-3-4b-it:free"
+        )
+
+        // Keep for backwards compat references
+        const val MODEL_NAME = "meta-llama/llama-3.3-70b-instruct:free"
+
         const val DEFAULT_SYSTEM_PROMPT = """You are CyanGem, an AI assistant connected to smart glasses.
 You receive text queries and visual context from what the user sees through their glasses.
 Be concise, helpful, and context-aware. When analyzing images, describe what's important first.

@@ -279,6 +279,39 @@ class CyanBleManager(private val context: Context) {
         )
     }
 
+    /**
+     * Sync ALL photos from the glasses over BLE.
+     *
+     * The SDK handles iteration internally: getPictureThumbnails() requests index 0,
+     * fires the callback once per photo, then automatically requests the next index
+     * until isLast=true. No external loop needed.
+     *
+     * [onPhoto] called on main thread for each photo:
+     *   current  — 1-based count of photos received so far
+     *   total    — expected total from glassesStatus.photoCount (0 if unknown)
+     *   isLast   — true when this is the final photo
+     *   jpeg     — raw JPEG bytes
+     *
+     * NOTE: Video transfer is not supported by this SDK version.
+     */
+    fun syncAllMedia(
+        onPhoto: (current: Int, total: Int, isLast: Boolean, jpeg: ByteArray) -> Unit
+    ) {
+        val total = _glassesStatus.value.photoCount.takeIf { it > 0 } ?: 0
+        var received = 0
+        LargeDataHandler.getInstance().getPictureThumbnails(
+            object : ILargeDataImageResponse {
+                override fun parseData(cmdType: Int, isLast: Boolean, data: ByteArray?) {
+                    val bytes = data ?: return
+                    if (bytes.isEmpty()) return
+                    received++
+                    val snapshot = received
+                    mainHandler.post { onPhoto(snapshot, total, isLast, bytes) }
+                }
+            }
+        )
+    }
+
     fun close() {
         if (notifyRegistered) {
             try { LargeDataHandler.getInstance().removeOutDeviceListener(100) } catch (_: Exception) {}
