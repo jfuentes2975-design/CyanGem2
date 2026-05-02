@@ -41,7 +41,7 @@
     <!-- BLE feature requirement -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
-    <!-- HC-006: ChatGPT app handoff. Required for Android 11+ package visibility. -->
+    <!-- HC-007A: ChatGPT app handoff. Required for Android 11+ package visibility. -->
     <queries>
         <package android:name="com.openai.chatgpt" />
     </queries>
