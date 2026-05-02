@@ -1,5 +1,9 @@
 package com.cyangem.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -17,18 +21,25 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.cyangem.ui.theme.*
 import com.cyangem.viewmodel.AskCyanAnswerState
 import com.cyangem.viewmodel.MainViewModel
 
 // =============================================================================
-// HC-009A — Ask Cyan with clearer no-key wording.
+// HC-010 — Ask Cyan with voice input + answer readback.
 //
-// Only change vs HC-009: the NotConfigured branch in AnswerCard now reads:
-//   "In-app answers need an OpenRouter key. Go to Settings → In-App Answers,
-//   or use Send to ChatGPT as backup."
+// Adds:
+//   - Mic FAB to capture a transcript via Android SpeechRecognizer.
+//     Transcript is placed in the input field — never auto-sent.
+//   - Read Aloud / Stop Reading toggle on the Answer card when an in-app
+//     answer is present (TextToSpeech).
+//   - Runtime RECORD_AUDIO permission request via Compose ActivityResult.
+//   - Updated copy clarifying the in-app vs backup paths.
 //
-// All other behavior identical to HC-009.
+// Both speech and TTS live in a screen-local AskCyanSpeechController. No
+// MainViewModel changes. No engine changes. The legacy VoiceEngine.kt is
+// untouched and still works for any other consumer.
 // =============================================================================
 
 private enum class AskCyanStatus(val display: String, val tone: AskCyanTone) {
@@ -52,6 +63,42 @@ fun AskCyanScreen(vm: MainViewModel) {
     var inputText by remember { mutableStateOf("") }
     var preparedPrompt by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf(AskCyanStatus.Ready) }
+
+    // HC-010 — voice + TTS state
+    var voiceState by remember { mutableStateOf<VoiceCaptureState>(VoiceCaptureState.Idle) }
+    var ttsState by remember { mutableStateOf<TtsState>(TtsState.Idle) }
+
+    val controller = remember {
+        AskCyanSpeechController(
+            context = context,
+            onState = { newState ->
+                voiceState = newState
+                if (newState is VoiceCaptureState.Got) {
+                    inputText = newState.text
+                    // Transcript edits clear any prior prepared prompt and answer.
+                    preparedPrompt = null
+                    if (vm.askCyanAnswer.value !is AskCyanAnswerState.Idle) {
+                        vm.resetAskCyanAnswer()
+                    }
+                }
+            },
+            onTtsState = { ttsState = it }
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose { controller.shutdown() }
+    }
+
+    // HC-010 — permission launcher for RECORD_AUDIO
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            controller.startListening()
+        } else {
+            voiceState = VoiceCaptureState.PermissionNeeded
+        }
+    }
 
     val answerState by vm.askCyanAnswer.collectAsState()
 
@@ -85,13 +132,14 @@ fun AskCyanScreen(vm: MainViewModel) {
             color = OnSurface
         )
         Text(
-            "Ask in CyanGem for an in-app answer. ChatGPT app is always available as a backup.",
+            "Voice capture stays in CyanGem until you choose where to send it.",
             fontSize = 13.sp,
             color = OnSurfaceMuted
         )
 
         Spacer(Modifier.height(16.dp))
 
+        // ── How it works / privacy card (HC-010 copy) ──────────────────────
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = SurfaceElevated,
@@ -102,11 +150,11 @@ fun AskCyanScreen(vm: MainViewModel) {
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    "Primary: Ask in CyanGem (in-app, free with an OpenRouter key).",
+                    "Ask in CyanGem shows answers here when configured.",
                     fontSize = 12.sp, fontWeight = FontWeight.Medium, color = OnSurface
                 )
                 Text(
-                    "Backup: Send to the installed ChatGPT app — no API key required.",
+                    "Send to ChatGPT opens the ChatGPT app as backup.",
                     fontSize = 11.sp, color = OnSurfaceMuted
                 )
                 Text(
@@ -125,6 +173,7 @@ fun AskCyanScreen(vm: MainViewModel) {
 
         Spacer(Modifier.height(16.dp))
 
+        // ── Input ────────────────────────────────────────────────────────────
         OutlinedTextField(
             value = inputText,
             onValueChange = {
@@ -148,11 +197,24 @@ fun AskCyanScreen(vm: MainViewModel) {
                 cursorColor = CyanPrimary
             )
         )
-        Text(
-            "Voice capture comes next.",
-            fontSize = 11.sp,
-            color = OnSurfaceMuted,
-            modifier = Modifier.padding(top = 4.dp, start = 4.dp)
+
+        Spacer(Modifier.height(8.dp))
+
+        // ── Mic row (HC-010) ─────────────────────────────────────────────────
+        VoiceMicRow(
+            voiceState = voiceState,
+            onMicTap = {
+                val isListening = voiceState is VoiceCaptureState.Listening
+                if (isListening) {
+                    controller.stopListening()
+                } else {
+                    val granted = ContextCompat.checkSelfPermission(
+                        context, Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (granted) controller.startListening()
+                    else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
         )
 
         Spacer(Modifier.height(12.dp))
@@ -180,7 +242,16 @@ fun AskCyanScreen(vm: MainViewModel) {
 
         if (answerState !is AskCyanAnswerState.Idle) {
             Spacer(Modifier.height(12.dp))
-            AnswerCard(answerState)
+            AnswerCard(
+                state = answerState,
+                ttsState = ttsState,
+                onReadAloud = {
+                    val text = (answerState as? AskCyanAnswerState.Answer)?.text
+                        ?: (answerState as? AskCyanAnswerState.Streaming)?.partial
+                    if (!text.isNullOrBlank()) controller.speak(text)
+                },
+                onStopReading = { controller.stopSpeaking() }
+            )
         }
 
         Spacer(Modifier.height(16.dp))
@@ -260,7 +331,9 @@ fun AskCyanScreen(vm: MainViewModel) {
                     inputText = ""
                     preparedPrompt = null
                     vm.resetAskCyanAnswer()
+                    controller.stopSpeaking()
                     status = AskCyanStatus.Ready
+                    voiceState = VoiceCaptureState.Idle
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -269,6 +342,57 @@ fun AskCyanScreen(vm: MainViewModel) {
                 Text("Clear")
             }
         }
+    }
+}
+
+// HC-010 — mic row helper
+@Composable
+private fun VoiceMicRow(
+    voiceState: VoiceCaptureState,
+    onMicTap: () -> Unit
+) {
+    val isListening = voiceState is VoiceCaptureState.Listening
+    val label: String = when (voiceState) {
+        is VoiceCaptureState.Idle -> "Tap to speak"
+        is VoiceCaptureState.Listening -> "Listening…"
+        is VoiceCaptureState.Got -> "Transcript captured"
+        is VoiceCaptureState.NoMatch -> "Could not hear that — tap to try again"
+        is VoiceCaptureState.PermissionNeeded -> "Microphone permission needed"
+        is VoiceCaptureState.Error -> "Voice error: ${voiceState.message}"
+    }
+    val labelColor = when (voiceState) {
+        is VoiceCaptureState.Listening -> CyanPrimary
+        is VoiceCaptureState.Got -> SuccessColor
+        is VoiceCaptureState.NoMatch -> Color(0xFFFFB300)
+        is VoiceCaptureState.PermissionNeeded -> Color(0xFFFFB300)
+        is VoiceCaptureState.Error -> Color(0xFFFFB300)
+        else -> OnSurfaceMuted
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        FloatingActionButton(
+            onClick = onMicTap,
+            modifier = Modifier.size(44.dp),
+            containerColor = if (isListening) ErrorColor else CyanPrimary,
+            contentColor = Color(0xFF003731)
+        ) {
+            Icon(
+                if (isListening) Icons.Default.MicOff else Icons.Default.Mic,
+                contentDescription = if (isListening) "Stop listening" else "Tap to speak",
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        Text(
+            label,
+            fontSize = 12.sp,
+            color = labelColor,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
@@ -292,7 +416,12 @@ private fun StatusChip(status: AskCyanStatus) {
 }
 
 @Composable
-private fun AnswerCard(state: AskCyanAnswerState) {
+private fun AnswerCard(
+    state: AskCyanAnswerState,
+    ttsState: TtsState,
+    onReadAloud: () -> Unit,
+    onStopReading: () -> Unit
+) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = SurfaceElevated,
@@ -306,11 +435,8 @@ private fun AnswerCard(state: AskCyanAnswerState) {
                 color = CyanPrimary
             )
             when (state) {
-                is AskCyanAnswerState.Idle -> {
-                    // Not visible — caller guards.
-                }
+                is AskCyanAnswerState.Idle -> { /* not visible */ }
                 is AskCyanAnswerState.NotConfigured -> {
-                    // HC-009A — exact wording per spec
                     Text(
                         "In-app answers need an OpenRouter key. Go to Settings → In-App Answers, or use Send to ChatGPT as backup.",
                         fontSize = 13.sp, color = OnSurface
@@ -332,6 +458,32 @@ private fun AnswerCard(state: AskCyanAnswerState) {
                 }
                 is AskCyanAnswerState.Answer -> {
                     Text(state.text, fontSize = 14.sp, color = OnSurface)
+                    // HC-010 — Read Aloud / Stop Reading
+                    Spacer(Modifier.height(4.dp))
+                    val isSpeaking = ttsState is TtsState.Speaking
+                    val isError = ttsState is TtsState.Error
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (isSpeaking) {
+                            OutlinedButton(onClick = onStopReading) {
+                                Icon(Icons.Default.VolumeOff, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Stop Reading")
+                            }
+                        } else {
+                            OutlinedButton(onClick = onReadAloud) {
+                                Icon(Icons.Default.VolumeUp, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Read Aloud")
+                            }
+                        }
+                        if (isError) {
+                            Text(
+                                (ttsState as TtsState.Error).message,
+                                fontSize = 11.sp,
+                                color = Color(0xFFFFB300)
+                            )
+                        }
+                    }
                 }
                 is AskCyanAnswerState.Error -> {
                     Text(
