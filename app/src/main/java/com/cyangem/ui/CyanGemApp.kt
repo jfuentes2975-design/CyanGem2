@@ -6,6 +6,7 @@ import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Stars
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,6 +23,8 @@ import com.cyangem.viewmodel.MainViewModel
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
     object Glasses  : Screen("glasses",  "Glasses",  Icons.Default.BluetoothSearching)
+    // HC-007C — new in-app AI Frame, primary AI experience
+    object AskCyan  : Screen("ask-cyan", "Ask Cyan", Icons.Default.SmartToy)
     object Chat     : Screen("chat",     "Chat",     Icons.Default.Chat)
     object Gems     : Screen("gems",     "Gems",     Icons.Default.Stars)
     object Gallery  : Screen("gallery",  "Gallery",  Icons.Default.PhotoLibrary)
@@ -30,7 +33,8 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
 
 val bottomNavItems = listOf(
     Screen.Glasses,
-    Screen.Chat,
+    Screen.AskCyan,    // HC-007C — placed second so the primary AI experience is prominent
+    Screen.Chat,       // remains as the backup handoff path
     Screen.Gems,
     Screen.Gallery,
     Screen.Settings
@@ -82,6 +86,7 @@ fun CyanGemApp(vm: MainViewModel = viewModel()) {
             modifier = Modifier.padding(padding)
         ) {
             composable(Screen.Glasses.route)  { GlassesScreen(vm) }
+            composable(Screen.AskCyan.route)  { AskCyanScreen(vm) }   // HC-007C
             composable(Screen.Chat.route)     { ChatScreen(vm) }
             composable(Screen.Gems.route)     { GemsScreen(vm) }
             composable(Screen.Gallery.route)  { GalleryScreen(vm) }
