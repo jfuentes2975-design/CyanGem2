@@ -1,0 +1,46 @@
+﻿# Gradle
+.gradle/
+build/
+**/build/
+
+# Android Studio / IntelliJ
+.idea/
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/usage.statistics.xml
+.idea/dictionaries/
+.idea/shelf/
+*.iml
+
+# Local machine config
+local.properties
+
+# Android build outputs
+*.apk
+*.ap_
+*.aab
+
+# Native / generated
+.externalNativeBuild/
+.cxx/
+captures/
+
+# Keystores and signing
+*.jks
+*.keystore
+keystore.properties
+
+# Secrets / API keys
+secrets.properties
+.env
+.env.*
+apikey.properties
+api-keys.properties
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
