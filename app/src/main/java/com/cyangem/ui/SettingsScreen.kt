@@ -1,9 +1,11 @@
 package com.cyangem.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -15,16 +17,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cyangem.ui.theme.*
 import com.cyangem.viewmodel.MainViewModel
 
 // =============================================================================
-// HC-007A — Settings: AI Mode is the only AI section in the visible UX.
-// Gemini / OpenRouter / AI Provider / AI Model sections removed. Engine
-// classes still exist on disk and can be re-enabled later from a future
-// patch — this is a UI change only.
+// HC-009A — Settings polish: "In-App Answers" promoted to the FIRST section
+// with visual emphasis (cyan-bordered SurfaceCard) so it cannot be missed.
+// AI Mode (ChatGPT handoff backup) drops to second. Connection Tips and
+// Protocol Notes order unchanged.
+//
+// No engine code touched. Engine files (Gemini/OpenRouter/ApiKeyStore) still
+// exist on disk and can be re-enabled in a future patch.
 // =============================================================================
 
 @Composable
@@ -51,7 +59,13 @@ fun SettingsScreen(vm: MainViewModel) {
         )
         Spacer(Modifier.height(16.dp))
 
-        SettingsSection("AI Mode") {
+        // ── HC-009A — In-App Answers FIRST, visually emphasized ─────────────
+        SettingsSection("In-App Answers") {
+            InAppAnswersCard(vm)
+        }
+
+        // ── AI Mode (ChatGPT handoff backup) ─────────────────────────────────
+        SettingsSection("AI Mode (ChatGPT Backup)") {
             ChatGptHandoffCard(vm)
         }
 
@@ -64,6 +78,137 @@ fun SettingsScreen(vm: MainViewModel) {
         }
 
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun InAppAnswersCard(vm: MainViewModel) {
+    val store = vm.apiKeyStore
+    var keyInput by remember { mutableStateOf("") }
+    var keyVisible by remember { mutableStateOf(false) }
+    var refreshTrigger by remember { mutableIntStateOf(0) }
+    val hasKey = remember(refreshTrigger) { store?.hasOpenRouterKey() == true }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .border(
+                width = 1.dp,
+                color = CyanPrimary.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(12.dp)
+            ),
+        color = SurfaceCard,
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Status badge — bold, with color tint
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(
+                    color = if (hasKey) SuccessColor.copy(alpha = 0.18f) else Color(0x33FFB300),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Text(
+                        if (hasKey) "Ready" else "Not configured",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (hasKey) SuccessColor else Color(0xFFFFB300)
+                    )
+                }
+            }
+
+            Text(
+                "Ask Cyan can answer inside CyanGem when an OpenRouter key is saved.",
+                fontSize = 13.sp,
+                color = OnSurface
+            )
+
+            OutlinedTextField(
+                value = keyInput,
+                onValueChange = { keyInput = it },
+                label = { Text("OpenRouter API key") },
+                placeholder = { Text("sk-or-...", color = OnSurfaceMuted) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    IconButton(onClick = { keyVisible = !keyVisible }) {
+                        Icon(
+                            if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = null,
+                            tint = OnSurfaceMuted
+                        )
+                    }
+                },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = CyanPrimary,
+                    unfocusedBorderColor = Color(0xFF30363D),
+                    focusedTextColor = OnSurface,
+                    unfocusedTextColor = OnSurface,
+                    cursorColor = CyanPrimary
+                )
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        val trimmed = keyInput.trim()
+                        if (trimmed.isNotEmpty()) {
+                            store?.setOpenRouterKey(trimmed)
+                            keyInput = ""
+                            refreshTrigger++
+                            vm.showSnackbar("In-app answers ready")
+                        }
+                    },
+                    enabled = keyInput.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = CyanPrimary,
+                        contentColor = Color(0xFF003731)
+                    )
+                ) { Text("Save Key", fontWeight = FontWeight.Bold) }
+
+                if (hasKey) {
+                    OutlinedButton(
+                        onClick = {
+                            store?.clearOpenRouterKey()
+                            refreshTrigger++
+                            vm.showSnackbar("Key cleared")
+                        }
+                    ) { Text("Clear Key") }
+                }
+            }
+
+            // Notes — exact wording per HC-009A spec
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "ChatGPT handoff still works without this key.",
+                fontSize = 11.sp,
+                color = OnSurfaceMuted
+            )
+            Text(
+                "This does not store ChatGPT credentials.",
+                fontSize = 11.sp,
+                color = OnSurfaceMuted
+            )
+            Text(
+                "Use this only if you want answers to appear inside CyanGem.",
+                fontSize = 11.sp,
+                color = OnSurfaceMuted
+            )
+
+            // Hint to get a key
+            Text(
+                "Get a free key at openrouter.ai → sign in with Google → Keys → Create Key.",
+                fontSize = 11.sp,
+                color = CyanPrimary,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
     }
 }
 

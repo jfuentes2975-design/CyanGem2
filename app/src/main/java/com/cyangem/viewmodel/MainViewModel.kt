@@ -58,6 +58,25 @@ data class UiState(
     val activeProvider: String = com.cyangem.data.ApiKeyStore.PROVIDER_OPENROUTER
 )
 
+// HC-009 — In-app answer mode state for Ask Cyan.
+// AskCyanScreen subscribes to MainViewModel.askCyanAnswer and renders a card
+// reflecting the current state. ChatGPT app handoff stays available as a
+// backup button on the same screen.
+sealed class AskCyanAnswerState {
+    /** No active in-app answer; default state. */
+    object Idle : AskCyanAnswerState()
+    /** No OpenRouter key saved — in-app primary path is unavailable. */
+    object NotConfigured : AskCyanAnswerState()
+    /** API call in flight; no streaming chunks yet. */
+    object Loading : AskCyanAnswerState()
+    /** Streaming chunks accumulating into [partial]. */
+    data class Streaming(val partial: String) : AskCyanAnswerState()
+    /** Final answer ready. */
+    data class Answer(val text: String) : AskCyanAnswerState()
+    /** In-app call failed — UI offers ChatGPT handoff as fallback. */
+    data class Error(val message: String) : AskCyanAnswerState()
+}
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── LAZY init — nothing heavy runs until first access ─────────────────────
@@ -99,6 +118,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+
+    // HC-009 — in-app answer state (Ask Cyan primary path)
+    private val _askCyanAnswer = MutableStateFlow<AskCyanAnswerState>(AskCyanAnswerState.Idle)
+    val askCyanAnswer: StateFlow<AskCyanAnswerState> = _askCyanAnswer.asStateFlow()
 
     init {
         // Start subsystems only after ViewModel is constructed.
@@ -172,6 +195,81 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val provider = store.getProvider()
         _uiState.value = _uiState.value.copy(activeProvider = provider)
+    }
+
+    // ── HC-009: in-app answer (Ask Cyan primary) ──────────────────────────────
+
+    /**
+     * HC-009 — primary in-app answer path. Reads the saved OpenRouter key,
+     * lazy-instantiates [openRouterEngine] if needed, and emits answer state
+     * transitions on [_askCyanAnswer]:
+     *
+     *   Idle → Loading → Streaming(partial) → Answer(text)
+     *   Idle → NotConfigured             (no key saved)
+     *   Idle → Loading → Error(message)  (network / API error)
+     *
+     * The OpenRouter engine's [sendMessageStream] performs the API call and
+     * then emits Streaming chunks at 20ms intervals (simulated streaming UX).
+     * No final Streaming Success event — completion is detected when the flow
+     * collector returns. We finalize to [Answer] if any chunks accumulated and
+     * no Error was seen.
+     *
+     * Does not affect existing chat history, voice path, or BLE state.
+     */
+    fun askCyanInApp(prompt: String) {
+        val trimmed = prompt.trim()
+        if (trimmed.isEmpty()) return
+
+        val store = apiKeyStore ?: run {
+            _askCyanAnswer.value = AskCyanAnswerState.Error("Storage not available")
+            return
+        }
+        val key = store.getOpenRouterKey()
+        if (key.isNullOrBlank()) {
+            _askCyanAnswer.value = AskCyanAnswerState.NotConfigured
+            return
+        }
+
+        // Reuse existing engine if already initialized with this key.
+        // Otherwise build a fresh one here so the user does not have to
+        // restart the app after saving a key.
+        val engine = openRouterEngine ?: OpenRouterEngine(key).also { openRouterEngine = it }
+
+        _askCyanAnswer.value = AskCyanAnswerState.Loading
+        viewModelScope.launch {
+            var fullText = ""
+            var hadError = false
+            try {
+                engine.sendMessageStream(trimmed).collect { result ->
+                    when (result) {
+                        is GeminiResult.Streaming -> {
+                            fullText += result.chunk
+                            _askCyanAnswer.value = AskCyanAnswerState.Streaming(fullText)
+                        }
+                        is GeminiResult.Error -> {
+                            hadError = true
+                            _askCyanAnswer.value = AskCyanAnswerState.Error(result.message)
+                        }
+                        else -> { /* no-op */ }
+                    }
+                }
+            } catch (e: Exception) {
+                hadError = true
+                _askCyanAnswer.value = AskCyanAnswerState.Error(e.message ?: "In-app AI failed")
+            }
+            if (!hadError) {
+                if (fullText.isNotEmpty()) {
+                    _askCyanAnswer.value = AskCyanAnswerState.Answer(fullText)
+                } else {
+                    _askCyanAnswer.value = AskCyanAnswerState.Error("No response received")
+                }
+            }
+        }
+    }
+
+    /** HC-009 — reset Ask Cyan answer state (used by Clear button or input edits). */
+    fun resetAskCyanAnswer() {
+        _askCyanAnswer.value = AskCyanAnswerState.Idle
     }
 
     // ── BLE ───────────────────────────────────────────────────────────────────
