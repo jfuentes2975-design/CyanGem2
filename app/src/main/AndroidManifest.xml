@@ -41,9 +41,31 @@
     <!-- BLE feature requirement -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
-    <!-- HC-007A: ChatGPT app handoff. Required for Android 11+ package visibility. -->
+    <!--
+        HC-013 — package visibility for the Open Gemini and Open Hey Cyan
+        buttons on Home. Android 11+ requires <queries> declarations for
+        getLaunchIntentForPackage(...) to return non-null for unrelated apps.
+
+        - com.google.android.apps.bard         : Gemini standalone (was Bard)
+        - com.google.android.googlequicksearchbox : Google app (Assistant host)
+        - com.openai.chatgpt                   : ChatGPT (kept from earlier work)
+        - com.heycyan.app, com.heyx.heycyan,
+          io.heycyan.app, com.oudmon.heycyan,
+          com.cyan.glasses                      : Hey Cyan candidates
+        - android.intent.action.VOICE_COMMAND  : public action fallback for Gemini
+    -->
     <queries>
+        <package android:name="com.google.android.apps.bard" />
+        <package android:name="com.google.android.googlequicksearchbox" />
         <package android:name="com.openai.chatgpt" />
+        <package android:name="com.heycyan.app" />
+        <package android:name="com.heyx.heycyan" />
+        <package android:name="io.heycyan.app" />
+        <package android:name="com.oudmon.heycyan" />
+        <package android:name="com.cyan.glasses" />
+        <intent>
+            <action android:name="android.intent.action.VOICE_COMMAND" />
+        </intent>
     </queries>
 
     <application

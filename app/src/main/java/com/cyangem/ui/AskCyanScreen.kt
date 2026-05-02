@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -27,19 +28,21 @@ import com.cyangem.viewmodel.AskCyanAnswerState
 import com.cyangem.viewmodel.MainViewModel
 
 // =============================================================================
-// HC-010 — Ask Cyan with voice input + answer readback.
+// HC-011 — Unified text + voice in-app answers inside Ask Cyan.
 //
-// Adds:
-//   - Mic FAB to capture a transcript via Android SpeechRecognizer.
-//     Transcript is placed in the input field — never auto-sent.
-//   - Read Aloud / Stop Reading toggle on the Answer card when an in-app
-//     answer is present (TextToSpeech).
-//   - Runtime RECORD_AUDIO permission request via Compose ActivityResult.
-//   - Updated copy clarifying the in-app vs backup paths.
+// Both typed and voice prompts land in `inputText` (Compose state), get
+// reviewed via Prepare Prompt, then go through `vm.askCyanInApp(prompt)`
+// which uses MainViewModel's separate Ask Cyan engine (CyanGem system prompt).
+// The answer renders inside this same screen via the AnswerCard composable.
+// ChatGPT app handoff stays as the backup path.
 //
-// Both speech and TTS live in a screen-local AskCyanSpeechController. No
-// MainViewModel changes. No engine changes. The legacy VoiceEngine.kt is
-// untouched and still works for any other consumer.
+// HC-011 additions on top of HC-010:
+//   - In-app answer mode readiness badge (Ready / Needs key) at top
+//   - Action button row on the Answer card (Read Aloud, Stop, Copy Answer,
+//     Clear Answer, Open in ChatGPT as Backup)
+//   - rememberSaveable for inputText and preparedPrompt so they survive tab
+//     switches and configuration changes (within Compose's saved-state rules)
+//   - Polished NotConfigured copy with explicit Settings hint
 // =============================================================================
 
 private enum class AskCyanStatus(val display: String, val tone: AskCyanTone) {
@@ -50,7 +53,9 @@ private enum class AskCyanStatus(val display: String, val tone: AskCyanTone) {
     InAppNotConfigured("In-app AI not configured", AskCyanTone.Warn),
     OpenedChatGptAsBackup("Opened ChatGPT as backup", AskCyanTone.Success),
     PromptCopied("Prompt copied", AskCyanTone.Info),
-    AnswerError("Couldn't reach in-app AI", AskCyanTone.Warn)
+    AnswerCopied("Answer copied", AskCyanTone.Info),
+    AnswerError("Couldn't reach in-app AI", AskCyanTone.Warn),
+    TranscriptCaptured("Transcript captured. Review, then tap Prepare Prompt.", AskCyanTone.Info)
 }
 
 private enum class AskCyanTone { Neutral, Info, Success, Warn }
@@ -60,11 +65,13 @@ fun AskCyanScreen(vm: MainViewModel) {
     val context = LocalContext.current
     val isInstalled = remember { isChatGptInstalled(context) }
 
-    var inputText by remember { mutableStateOf("") }
-    var preparedPrompt by remember { mutableStateOf<String?>(null) }
+    // HC-011 — survive tab switches and config changes
+    var inputText by rememberSaveable { mutableStateOf("") }
+    var preparedPrompt by rememberSaveable { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf(AskCyanStatus.Ready) }
 
-    // HC-010 — voice + TTS state
+    // HC-010 — voice + TTS state (intentionally NOT saved across tab switch;
+    // a fresh controller is created on re-entry to avoid stale resource refs)
     var voiceState by remember { mutableStateOf<VoiceCaptureState>(VoiceCaptureState.Idle) }
     var ttsState by remember { mutableStateOf<TtsState>(TtsState.Idle) }
 
@@ -75,11 +82,11 @@ fun AskCyanScreen(vm: MainViewModel) {
                 voiceState = newState
                 if (newState is VoiceCaptureState.Got) {
                     inputText = newState.text
-                    // Transcript edits clear any prior prepared prompt and answer.
                     preparedPrompt = null
                     if (vm.askCyanAnswer.value !is AskCyanAnswerState.Idle) {
                         vm.resetAskCyanAnswer()
                     }
+                    status = AskCyanStatus.TranscriptCaptured
                 }
             },
             onTtsState = { ttsState = it }
@@ -89,31 +96,36 @@ fun AskCyanScreen(vm: MainViewModel) {
         onDispose { controller.shutdown() }
     }
 
-    // HC-010 — permission launcher for RECORD_AUDIO
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) {
-            controller.startListening()
-        } else {
-            voiceState = VoiceCaptureState.PermissionNeeded
-        }
+        if (granted) controller.startListening()
+        else voiceState = VoiceCaptureState.PermissionNeeded
     }
 
     val answerState by vm.askCyanAnswer.collectAsState()
+    val inAppReady by vm.inAppReady.collectAsState()
 
+    // Ensure readiness reflects current disk state when the screen enters
+    // composition (e.g., user returned from Settings after saving a key).
+    LaunchedEffect(Unit) { vm.refreshInAppReady() }
+
+    // Map answer state and voice events into the local status chip.
     LaunchedEffect(answerState) {
-        status = when (val a = answerState) {
+        // Don't clobber a transient TranscriptCaptured / PromptCopied / AnswerCopied
+        // unless answerState moved into a non-idle state.
+        val a = answerState
+        when (a) {
+            is AskCyanAnswerState.NotConfigured -> status = AskCyanStatus.InAppNotConfigured
+            is AskCyanAnswerState.Loading -> status = AskCyanStatus.AskingCyan
+            is AskCyanAnswerState.Streaming -> status = AskCyanStatus.AskingCyan
+            is AskCyanAnswerState.Answer -> status = AskCyanStatus.AnswerReady
+            is AskCyanAnswerState.Error -> status = AskCyanStatus.AnswerError
             is AskCyanAnswerState.Idle -> {
-                if (preparedPrompt != null) AskCyanStatus.PromptPrepared
-                else if (inputText.isBlank()) AskCyanStatus.Ready
-                else status
+                if (preparedPrompt != null) status = AskCyanStatus.PromptPrepared
+                else if (inputText.isBlank()) status = AskCyanStatus.Ready
+                // else leave whatever transient status is showing
             }
-            is AskCyanAnswerState.NotConfigured -> AskCyanStatus.InAppNotConfigured
-            is AskCyanAnswerState.Loading -> AskCyanStatus.AskingCyan
-            is AskCyanAnswerState.Streaming -> AskCyanStatus.AskingCyan
-            is AskCyanAnswerState.Answer -> AskCyanStatus.AnswerReady
-            is AskCyanAnswerState.Error -> AskCyanStatus.AnswerError
         }
     }
 
@@ -137,9 +149,14 @@ fun AskCyanScreen(vm: MainViewModel) {
             color = OnSurfaceMuted
         )
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
 
-        // ── How it works / privacy card (HC-010 copy) ──────────────────────
+        // ── HC-011 — In-app answer mode readiness badge ─────────────────────
+        InAppReadinessBadge(inAppReady)
+
+        Spacer(Modifier.height(12.dp))
+
+        // ── How it works / privacy card ─────────────────────────────────────
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = SurfaceElevated,
@@ -173,7 +190,6 @@ fun AskCyanScreen(vm: MainViewModel) {
 
         Spacer(Modifier.height(16.dp))
 
-        // ── Input ────────────────────────────────────────────────────────────
         OutlinedTextField(
             value = inputText,
             onValueChange = {
@@ -200,7 +216,6 @@ fun AskCyanScreen(vm: MainViewModel) {
 
         Spacer(Modifier.height(8.dp))
 
-        // ── Mic row (HC-010) ─────────────────────────────────────────────────
         VoiceMicRow(
             voiceState = voiceState,
             onMicTap = {
@@ -247,10 +262,32 @@ fun AskCyanScreen(vm: MainViewModel) {
                 ttsState = ttsState,
                 onReadAloud = {
                     val text = (answerState as? AskCyanAnswerState.Answer)?.text
-                        ?: (answerState as? AskCyanAnswerState.Streaming)?.partial
                     if (!text.isNullOrBlank()) controller.speak(text)
                 },
-                onStopReading = { controller.stopSpeaking() }
+                onStopReading = { controller.stopSpeaking() },
+                onCopyAnswer = {
+                    val text = (answerState as? AskCyanAnswerState.Answer)?.text
+                    if (!text.isNullOrBlank()) {
+                        copyToClipboard(context, text)
+                        status = AskCyanStatus.AnswerCopied
+                        vm.showSnackbar("Answer copied")
+                    }
+                },
+                onClearAnswer = {
+                    controller.stopSpeaking()
+                    vm.resetAskCyanAnswer()
+                    status = if (preparedPrompt != null) AskCyanStatus.PromptPrepared
+                             else AskCyanStatus.Ready
+                },
+                onOpenInChatGptAsBackup = {
+                    val prompt = preparedPrompt ?: inputText.trim().ifBlank { null }
+                    if (!prompt.isNullOrBlank()) {
+                        handoffPromptToChatGpt(context, prompt, vm)
+                        status = AskCyanStatus.OpenedChatGptAsBackup
+                    } else {
+                        vm.showSnackbar("Type or speak a question first")
+                    }
+                }
             )
         }
 
@@ -278,6 +315,8 @@ fun AskCyanScreen(vm: MainViewModel) {
                 Text("Prepare Prompt", fontWeight = FontWeight.Bold)
             }
 
+            // Ask in CyanGem — visually primary regardless of key (we always
+            // surface a friendly NotConfigured message when key is missing).
             Button(
                 onClick = {
                     val prompt = preparedPrompt ?: return@Button
@@ -345,7 +384,32 @@ fun AskCyanScreen(vm: MainViewModel) {
     }
 }
 
-// HC-010 — mic row helper
+// HC-011 — readiness badge
+@Composable
+private fun InAppReadinessBadge(inAppReady: Boolean) {
+    val (bg, fg, label) = if (inAppReady) {
+        Triple(SuccessColor.copy(alpha = 0.18f), SuccessColor, "In-app answer mode: Ready")
+    } else {
+        Triple(Color(0x33FFB300), Color(0xFFFFB300), "In-app answer mode: Needs key")
+    }
+    Surface(color = bg, shape = RoundedCornerShape(20.dp)) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                if (inAppReady) Icons.Default.CheckCircle else Icons.Default.Info,
+                contentDescription = null,
+                tint = fg,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = fg)
+        }
+    }
+}
+
+// HC-010 — mic row
 @Composable
 private fun VoiceMicRow(
     voiceState: VoiceCaptureState,
@@ -420,7 +484,10 @@ private fun AnswerCard(
     state: AskCyanAnswerState,
     ttsState: TtsState,
     onReadAloud: () -> Unit,
-    onStopReading: () -> Unit
+    onStopReading: () -> Unit,
+    onCopyAnswer: () -> Unit,
+    onClearAnswer: () -> Unit,
+    onOpenInChatGptAsBackup: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -429,19 +496,31 @@ private fun AnswerCard(
     ) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                "CyanGem answer",
+                "CyanGem Answer",
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 color = CyanPrimary
             )
             when (state) {
                 is AskCyanAnswerState.Idle -> { /* not visible */ }
+
                 is AskCyanAnswerState.NotConfigured -> {
                     Text(
-                        "In-app answers need an OpenRouter key. Go to Settings → In-App Answers, or use Send to ChatGPT as backup.",
+                        "In-app answers need an OpenRouter key.",
                         fontSize = 13.sp, color = OnSurface
                     )
+                    Text(
+                        "Set up In-App Answers in Settings, or use ChatGPT backup.",
+                        fontSize = 12.sp, color = OnSurfaceMuted
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedButton(onClick = onOpenInChatGptAsBackup) {
+                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Open in ChatGPT as Backup")
+                    }
                 }
+
                 is AskCyanAnswerState.Loading -> {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         CircularProgressIndicator(
@@ -452,39 +531,37 @@ private fun AnswerCard(
                         Text("Asking CyanGem…", fontSize = 13.sp, color = OnSurfaceMuted)
                     }
                 }
+
                 is AskCyanAnswerState.Streaming -> {
                     Text(state.partial, fontSize = 14.sp, color = OnSurface)
                     Text("…", fontSize = 14.sp, color = CyanPrimary)
                 }
+
                 is AskCyanAnswerState.Answer -> {
                     Text(state.text, fontSize = 14.sp, color = OnSurface)
-                    // HC-010 — Read Aloud / Stop Reading
-                    Spacer(Modifier.height(4.dp))
-                    val isSpeaking = ttsState is TtsState.Speaking
-                    val isError = ttsState is TtsState.Error
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (isSpeaking) {
-                            OutlinedButton(onClick = onStopReading) {
-                                Icon(Icons.Default.VolumeOff, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Stop Reading")
-                            }
-                        } else {
-                            OutlinedButton(onClick = onReadAloud) {
-                                Icon(Icons.Default.VolumeUp, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Read Aloud")
-                            }
-                        }
-                        if (isError) {
-                            Text(
-                                (ttsState as TtsState.Error).message,
-                                fontSize = 11.sp,
-                                color = Color(0xFFFFB300)
-                            )
-                        }
+                    Spacer(Modifier.height(6.dp))
+                    AnswerActionRow(
+                        ttsState = ttsState,
+                        onReadAloud = onReadAloud,
+                        onStopReading = onStopReading,
+                        onCopyAnswer = onCopyAnswer,
+                        onClearAnswer = onClearAnswer,
+                        onOpenInChatGptAsBackup = onOpenInChatGptAsBackup
+                    )
+                    if (ttsState is TtsState.Error) {
+                        Text(
+                            "Could not start read aloud.",
+                            fontSize = 11.sp,
+                            color = Color(0xFFFFB300)
+                        )
+                        Text(
+                            ttsState.message,
+                            fontSize = 11.sp,
+                            color = OnSurfaceMuted
+                        )
                     }
                 }
+
                 is AskCyanAnswerState.Error -> {
                     Text(
                         "Couldn't reach in-app AI.",
@@ -494,11 +571,60 @@ private fun AnswerCard(
                         state.message,
                         fontSize = 12.sp, color = OnSurfaceMuted
                     )
-                    Text(
-                        "Tip: tap \"Send to ChatGPT (backup)\" to continue.",
-                        fontSize = 12.sp, color = OnSurfaceMuted
-                    )
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedButton(onClick = onOpenInChatGptAsBackup) {
+                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Open in ChatGPT as Backup")
+                    }
                 }
+            }
+        }
+    }
+}
+
+// HC-011 — answer card actions: Read Aloud / Stop / Copy / Clear / Backup
+@Composable
+private fun AnswerActionRow(
+    ttsState: TtsState,
+    onReadAloud: () -> Unit,
+    onStopReading: () -> Unit,
+    onCopyAnswer: () -> Unit,
+    onClearAnswer: () -> Unit,
+    onOpenInChatGptAsBackup: () -> Unit
+) {
+    val isSpeaking = ttsState is TtsState.Speaking
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (isSpeaking) {
+                OutlinedButton(onClick = onStopReading, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.VolumeOff, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Stop Reading")
+                }
+            } else {
+                OutlinedButton(onClick = onReadAloud, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.VolumeUp, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Read Aloud")
+                }
+            }
+            OutlinedButton(onClick = onCopyAnswer, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Copy Answer")
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedButton(onClick = onOpenInChatGptAsBackup, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Open in ChatGPT")
+            }
+            TextButton(onClick = onClearAnswer, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Clear Answer")
             }
         }
     }

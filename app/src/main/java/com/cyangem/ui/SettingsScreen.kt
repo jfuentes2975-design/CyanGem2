@@ -1,38 +1,38 @@
 package com.cyangem.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cyangem.ui.theme.*
 import com.cyangem.viewmodel.MainViewModel
 
 // =============================================================================
-// HC-009A — Settings polish: "In-App Answers" promoted to the FIRST section
-// with visual emphasis (cyan-bordered SurfaceCard) so it cannot be missed.
-// AI Mode (ChatGPT handoff backup) drops to second. Connection Tips and
-// Protocol Notes order unchanged.
+// HC-013 — Minimal Settings: stripped of In-App Answers (the source of the
+// HC-007..HC-012 churn) and AI Mode (ChatGPT Backup) — both replaced by
+// Home's Open Gemini / Open Hey Cyan buttons.
 //
-// No engine code touched. Engine files (Gemini/OpenRouter/ApiKeyStore) still
-// exist on disk and can be re-enabled in a future patch.
+// Kept:
+//   - About card (version + pivot note)
+//   - Connection Tips (BLE diagnostics still useful for support role)
+//   - Protocol Notes (BLE protocol UUIDs — useful for the Hey Cyan native app
+//     team or for any future reverse-engineering)
+//
+// Removed:
+//   - InAppAnswersCard (Save Key / Clear Key / Load Test Key / Test In-App AI)
+//   - ChatGptHandoffCard (Open ChatGPT button — Home's Open Gemini supersedes)
+//
+// MainViewModel parameter is kept for ABI stability with CyanGemApp's NavHost
+// composable signature, but currently unused inside this composable.
 // =============================================================================
 
 @Composable
@@ -59,14 +59,8 @@ fun SettingsScreen(vm: MainViewModel) {
         )
         Spacer(Modifier.height(16.dp))
 
-        // ── HC-009A — In-App Answers FIRST, visually emphasized ─────────────
-        SettingsSection("In-App Answers") {
-            InAppAnswersCard(vm)
-        }
-
-        // ── AI Mode (ChatGPT handoff backup) ─────────────────────────────────
-        SettingsSection("AI Mode (ChatGPT Backup)") {
-            ChatGptHandoffCard(vm)
+        SettingsSection("About") {
+            AboutCard()
         }
 
         SettingsSection("Connection Tips") {
@@ -82,183 +76,25 @@ fun SettingsScreen(vm: MainViewModel) {
 }
 
 @Composable
-private fun InAppAnswersCard(vm: MainViewModel) {
-    val store = vm.apiKeyStore
-    var keyInput by remember { mutableStateOf("") }
-    var keyVisible by remember { mutableStateOf(false) }
-    var refreshTrigger by remember { mutableIntStateOf(0) }
-    val hasKey = remember(refreshTrigger) { store?.hasOpenRouterKey() == true }
-
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
-            .border(
-                width = 1.dp,
-                color = CyanPrimary.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(12.dp)
-            ),
-        color = SurfaceCard,
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            // Status badge — bold, with color tint
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Surface(
-                    color = if (hasKey) SuccessColor.copy(alpha = 0.18f) else Color(0x33FFB300),
-                    shape = RoundedCornerShape(20.dp)
-                ) {
-                    Text(
-                        if (hasKey) "Ready" else "Not configured",
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (hasKey) SuccessColor else Color(0xFFFFB300)
-                    )
-                }
-            }
-
-            Text(
-                "Ask Cyan can answer inside CyanGem when an OpenRouter key is saved.",
-                fontSize = 13.sp,
-                color = OnSurface
-            )
-
-            OutlinedTextField(
-                value = keyInput,
-                onValueChange = { keyInput = it },
-                label = { Text("OpenRouter API key") },
-                placeholder = { Text("sk-or-...", color = OnSurfaceMuted) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                trailingIcon = {
-                    IconButton(onClick = { keyVisible = !keyVisible }) {
-                        Icon(
-                            if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            contentDescription = null,
-                            tint = OnSurfaceMuted
-                        )
-                    }
-                },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = CyanPrimary,
-                    unfocusedBorderColor = Color(0xFF30363D),
-                    focusedTextColor = OnSurface,
-                    unfocusedTextColor = OnSurface,
-                    cursorColor = CyanPrimary
-                )
-            )
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        val trimmed = keyInput.trim()
-                        if (trimmed.isNotEmpty()) {
-                            store?.setOpenRouterKey(trimmed)
-                            keyInput = ""
-                            refreshTrigger++
-                            vm.showSnackbar("In-app answers ready")
-                        }
-                    },
-                    enabled = keyInput.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = CyanPrimary,
-                        contentColor = Color(0xFF003731)
-                    )
-                ) { Text("Save Key", fontWeight = FontWeight.Bold) }
-
-                if (hasKey) {
-                    OutlinedButton(
-                        onClick = {
-                            store?.clearOpenRouterKey()
-                            refreshTrigger++
-                            vm.showSnackbar("Key cleared")
-                        }
-                    ) { Text("Clear Key") }
-                }
-            }
-
-            // Notes — exact wording per HC-009A spec
-            Spacer(Modifier.height(2.dp))
-            Text(
-                "ChatGPT handoff still works without this key.",
-                fontSize = 11.sp,
-                color = OnSurfaceMuted
-            )
-            Text(
-                "This does not store ChatGPT credentials.",
-                fontSize = 11.sp,
-                color = OnSurfaceMuted
-            )
-            Text(
-                "Use this only if you want answers to appear inside CyanGem.",
-                fontSize = 11.sp,
-                color = OnSurfaceMuted
-            )
-
-            // Hint to get a key
-            Text(
-                "Get a free key at openrouter.ai → sign in with Google → Keys → Create Key.",
-                fontSize = 11.sp,
-                color = CyanPrimary,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-        }
-    }
-}
-
-@Composable
-private fun ChatGptHandoffCard(vm: MainViewModel) {
-    val context = LocalContext.current
-    val isInstalled = remember { isChatGptInstalled(context) }
-
+private fun AboutCard() {
     Surface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         color = SurfaceElevated,
         shape = RoundedCornerShape(12.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                "Uses installed ChatGPT app — no API key required",
+                "CyanGem2 is a companion app to Gemini Live and the Hey Cyan glasses.",
                 fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
                 color = OnSurface
             )
             Text(
-                if (isInstalled) "ChatGPT app: detected"
-                else "ChatGPT app: not detected — install it from the Play Store",
+                "Audio routing, microphone, and AI conversation are handled by your phone's Bluetooth and the Gemini app — not by this app.",
                 fontSize = 11.sp,
-                color = if (isInstalled) SuccessColor else Color(0xFFFFB300),
-                fontWeight = FontWeight.Medium
+                color = OnSurfaceMuted
             )
-            Button(
-                onClick = { handoffTestPromptToChatGpt(context, vm) },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = CyanPrimary,
-                    contentColor = Color(0xFF003731)
-                )
-            ) {
-                Icon(
-                    Icons.Default.Send,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("Test ChatGPT Handoff", fontWeight = FontWeight.Bold)
-            }
             Text(
-                "No ChatGPT credentials stored.\n" +
-                "No paid API call from CyanGem2.\n" +
-                "Tapping the button sends a test prompt to ChatGPT; ChatGPT may " +
-                "require you to tap Send to deliver the message.",
+                "Use the Home tab to open Gemini, open the Hey Cyan app, and check the daily-mode checklist.",
                 fontSize = 11.sp,
                 color = OnSurfaceMuted
             )
@@ -275,16 +111,16 @@ private fun ConnectionTipsCard() {
     ) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(
-                "🔵 BLE" to "Keep glasses within 10m during connection. Glasses must be powered on.",
-                "📶 Media Sync" to "After connecting BLE, enable Wi-Fi. The glasses broadcast a Wi-Fi Direct network. Your phone joins it automatically during sync.",
-                "🔋 Background" to "Go to Settings → Apps → CyanGem → Battery → Unrestricted to keep BLE alive.",
-                "🔧 Commands fail?" to "Open BLE Inspector (Glasses tab) and verify write/notify characteristic UUIDs. Use nRF Connect to cross-reference.",
+                "🔵 Bluetooth" to "Pair / unpair Hey Cyan glasses through your phone's Settings → Connections → Bluetooth.",
+                "🎧 Audio routing" to "If audio plays from the phone speaker instead of the glasses, expand the OS media-output panel and select Hey Cyan.",
+                "🎤 Microphone" to "Confirm Microphone permission for the Google app so Gemini Live can hear you through the glasses.",
+                "🔋 Background" to "Settings → Apps → Google → Battery → Unrestricted helps Gemini Live stay responsive when the screen is off.",
             ).forEach { (title, detail) ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(title, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = CyanPrimary)
                     Text(detail, fontSize = 12.sp, color = OnSurfaceMuted)
                 }
-                if (title != "🔧 Commands fail?") HorizontalDivider(color = Color(0xFF30363D), thickness = 0.5.dp)
+                if (title != "🔋 Background") HorizontalDivider(color = Color(0xFF30363D), thickness = 0.5.dp)
             }
         }
     }
@@ -298,6 +134,12 @@ private fun BleProtocolCard() {
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                "Reference for any future direct-BLE work (photo bridge, custom commands). The Hey Cyan native app handles these today.",
+                fontSize = 11.sp,
+                color = OnSurfaceMuted
+            )
+            Spacer(Modifier.height(4.dp))
             Text("Primary Service UUID", fontSize = 11.sp, color = OnSurfaceMuted)
             Text(
                 "7905FFF0-B5CE-4E99-A40F-4B1E122D00D0",
@@ -312,12 +154,6 @@ private fun BleProtocolCard() {
                 fontSize = 10.sp,
                 color = CyanSecondary,
                 fontFamily = FontFamily.Monospace
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Characteristic UUIDs are auto-detected on connect. If BLE commands don't work, use nRF Connect to sniff the exact write/notify UUIDs and file a note.",
-                fontSize = 11.sp,
-                color = OnSurfaceMuted
             )
         }
     }

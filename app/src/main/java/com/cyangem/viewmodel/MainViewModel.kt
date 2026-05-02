@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.util.Log
 import com.cyangem.media.QueryStrategy
 import com.cyangem.media.WifiDirectManager
+import com.cyangem.ui.AskCyanPromptBuilder
 import com.cyangem.ui.VoiceEngine
 import com.cyangem.ui.VoiceState
 import androidx.lifecycle.AndroidViewModel
@@ -34,6 +35,27 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.os.Build
 
+// =============================================================================
+// HC-013 — MainViewModel for the Home shell pivot.
+//
+// CRITICAL CHANGE vs HC-011: the init {} block is EMPTY. No eager construction
+// of OpenRouterEngine, GeminiEngine, voice engine, BLE manager, media sync,
+// Wi-Fi direct, gems repository, or in-app AI readiness signals.
+//
+// All public fields and methods are preserved so the dormant screens
+// (GlassesScreen, ChatScreen, GemsScreen, GalleryScreen, AskCyanScreen)
+// still compile — but they are unreachable from the new Home + Settings nav,
+// so none of these methods are invoked at runtime.
+//
+// The lazy fields (bleManager, mediaSyncer, voiceEngine, wifiManager,
+// apiKeyStore, gemsRepo) are NEVER accessed during normal Home/Settings use,
+// so they never construct. No background BLE scanning. No SpeechRecognizer
+// allocation. No EncryptedSharedPreferences open. No OpenRouterEngine init.
+//
+// Snackbar StateFlow remains live so CyanGemApp's Scaffold can still post
+// (currently unused; preserved for future use).
+// =============================================================================
+
 data class UiState(
     val connectionState: ConnectionState = ConnectionState.IDLE,
     val scannedDevices: List<GlassesDevice> = emptyList(),
@@ -58,29 +80,23 @@ data class UiState(
     val activeProvider: String = com.cyangem.data.ApiKeyStore.PROVIDER_OPENROUTER
 )
 
-// HC-009 — In-app answer mode state for Ask Cyan.
-// AskCyanScreen subscribes to MainViewModel.askCyanAnswer and renders a card
-// reflecting the current state. ChatGPT app handoff stays available as a
-// backup button on the same screen.
+// HC-009 — kept for compile compat with dormant AskCyanScreen.
 sealed class AskCyanAnswerState {
-    /** No active in-app answer; default state. */
     object Idle : AskCyanAnswerState()
-    /** No OpenRouter key saved — in-app primary path is unavailable. */
     object NotConfigured : AskCyanAnswerState()
-    /** API call in flight; no streaming chunks yet. */
     object Loading : AskCyanAnswerState()
-    /** Streaming chunks accumulating into [partial]. */
     data class Streaming(val partial: String) : AskCyanAnswerState()
-    /** Final answer ready. */
     data class Answer(val text: String) : AskCyanAnswerState()
-    /** In-app call failed — UI offers ChatGPT handoff as fallback. */
     data class Error(val message: String) : AskCyanAnswerState()
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    // ── LAZY init — nothing heavy runs until first access ─────────────────────
-    // This prevents any single subsystem crash from killing the entire launch.
+    // Lazy fields — preserved so dormant screens compile. NEVER accessed by the
+    // new Home + Settings nav, so the lazy bodies never run. If you find
+    // yourself adding code that touches any of these, stop and rethink — they
+    // belong to the old "phone is the AI brain" architecture and should be
+    // dead in the Gemini Live companion model.
 
     val bleManager by lazy {
         safeCreate("CyanBleManager") { CyanBleManager(application) }
@@ -109,7 +125,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var geminiEngine: GeminiEngine? = null
     private var openRouterEngine: OpenRouterEngine? = null
 
-    /** Returns whichever engine is currently active based on stored provider preference */
     private val activeEngine: Any?
         get() = when (apiKeyStore?.getProvider()) {
             com.cyangem.data.ApiKeyStore.PROVIDER_OPENROUTER -> openRouterEngine
@@ -119,29 +134,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    // HC-009 — in-app answer state (Ask Cyan primary path)
+    // HC-009 / HC-011 fields kept for compile compat with dormant screens.
     private val _askCyanAnswer = MutableStateFlow<AskCyanAnswerState>(AskCyanAnswerState.Idle)
     val askCyanAnswer: StateFlow<AskCyanAnswerState> = _askCyanAnswer.asStateFlow()
 
+    private val _inAppReady = MutableStateFlow(false)
+    val inAppReady: StateFlow<Boolean> = _inAppReady.asStateFlow()
+
+    private var askCyanEngine: OpenRouterEngine? = null
+    private var askCyanEngineKey: String? = null
+
     init {
-        // Start subsystems only after ViewModel is constructed.
-        // Each call is guarded — a failure in one does not affect others.
-        runCatching { observeBleState() }.onFailure { Log.e("CyanGem", "observeBleState failed", it) }
-        runCatching { observeSyncProgress() }.onFailure { Log.e("CyanGem", "observeSync failed", it) }
-        runCatching { refreshGems() }.onFailure { Log.e("CyanGem", "refreshGems failed", it) }
-        runCatching { checkApiKey() }.onFailure { Log.e("CyanGem", "checkApiKey failed", it) }
-        runCatching { initVoice() }.onFailure { Log.e("CyanGem", "initVoice failed", it) }
-        runCatching { updateQueryStrategy() }.onFailure { Log.e("CyanGem", "updateQueryStrategy failed", it) }
+        // HC-013 — INTENTIONALLY EMPTY. No eager subsystem construction.
+        // Per Ops review: MainViewModel must not initialize OpenRouter, Kimi,
+        // Gemini API, Ask Cyan, voice engine, BLE experiments, or media sync
+        // in the background. The Home shell does not need any of these.
+        Log.d("CyanGem", "HC-013 MainViewModel constructed — init block intentionally empty.")
     }
 
-    /** Safely create a subsystem — logs failure, returns null on error */
     private fun <T> safeCreate(name: String, block: () -> T): T? {
         return runCatching(block)
             .onFailure { Log.e("CyanGem", "Init failed: $name — ${it.message}", it) }
             .getOrNull()
     }
 
-    // ── Setup / API key ───────────────────────────────────────────────────────
+    // ── UI helpers ────────────────────────────────────────────────────────────
+
+    fun showSnackbar(message: String) {
+        _uiState.value = _uiState.value.copy(snackbarMessage = message)
+    }
+
+    fun clearSnackbar() {
+        _uiState.value = _uiState.value.copy(snackbarMessage = null)
+    }
+
+    // =========================================================================
+    // Below: methods retained for compile compat with dormant screens. They
+    // are NEVER invoked from the Home + Settings nav. If a future screen needs
+    // any of these, evaluate whether it actually belongs in the Gemini Live
+    // companion model before re-wiring.
+    // =========================================================================
 
     private fun checkApiKey() {
         val store = apiKeyStore ?: return
@@ -169,26 +201,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             activeProvider = com.cyangem.data.ApiKeyStore.PROVIDER_OPENROUTER
         )
         initGemini()
-        showSnackbar("✅ OpenRouter key saved — using free AI")
+        refreshInAppReady()
+        showSnackbar("OpenRouter key saved")
     }
 
     fun setProvider(provider: String) {
         apiKeyStore?.setProvider(provider)
         _uiState.value = _uiState.value.copy(activeProvider = provider)
         initGemini()
-        val name = if (provider == com.cyangem.data.ApiKeyStore.PROVIDER_OPENROUTER)
-            "OpenRouter (Free)" else "Gemini"
-        showSnackbar("Switched to $name")
+        showSnackbar("Provider set: $provider")
     }
 
     private fun initGemini(gem: Gem? = _uiState.value.activeGem) {
         val store = apiKeyStore ?: return
-        // Init OpenRouter engine if key exists
         store.getOpenRouterKey()?.let { key ->
             openRouterEngine = if (gem != null) OpenRouterEngine.createForGem(key, gem)
             else OpenRouterEngine(key)
         }
-        // Init Gemini engine if key exists
         store.getApiKey()?.let { key ->
             geminiEngine = if (gem != null) GeminiEngine.createForGem(key, gem)
             else GeminiEngine(key)
@@ -197,29 +226,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.value = _uiState.value.copy(activeProvider = provider)
     }
 
-    // ── HC-009: in-app answer (Ask Cyan primary) ──────────────────────────────
+    fun refreshInAppReady() {
+        _inAppReady.value = apiKeyStore?.hasOpenRouterKey() == true
+    }
 
-    /**
-     * HC-009 — primary in-app answer path. Reads the saved OpenRouter key,
-     * lazy-instantiates [openRouterEngine] if needed, and emits answer state
-     * transitions on [_askCyanAnswer]:
-     *
-     *   Idle → Loading → Streaming(partial) → Answer(text)
-     *   Idle → NotConfigured             (no key saved)
-     *   Idle → Loading → Error(message)  (network / API error)
-     *
-     * The OpenRouter engine's [sendMessageStream] performs the API call and
-     * then emits Streaming chunks at 20ms intervals (simulated streaming UX).
-     * No final Streaming Success event — completion is detected when the flow
-     * collector returns. We finalize to [Answer] if any chunks accumulated and
-     * no Error was seen.
-     *
-     * Does not affect existing chat history, voice path, or BLE state.
-     */
     fun askCyanInApp(prompt: String) {
-        val trimmed = prompt.trim()
+        // Dormant — Home shell does not call this. Kept for compile compat.
+        val trimmed = AskCyanPromptBuilder.wrapUserPrompt(prompt)
         if (trimmed.isEmpty()) return
-
         val store = apiKeyStore ?: run {
             _askCyanAnswer.value = AskCyanAnswerState.Error("Storage not available")
             return
@@ -229,12 +243,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _askCyanAnswer.value = AskCyanAnswerState.NotConfigured
             return
         }
-
-        // Reuse existing engine if already initialized with this key.
-        // Otherwise build a fresh one here so the user does not have to
-        // restart the app after saving a key.
-        val engine = openRouterEngine ?: OpenRouterEngine(key).also { openRouterEngine = it }
-
+        val engine = if (askCyanEngine != null && askCyanEngineKey == key) {
+            askCyanEngine!!
+        } else {
+            OpenRouterEngine(key, AskCyanPromptBuilder.ASK_CYAN_SYSTEM_PROMPT).also {
+                askCyanEngine = it
+                askCyanEngineKey = key
+            }
+        }
         _askCyanAnswer.value = AskCyanAnswerState.Loading
         viewModelScope.launch {
             var fullText = ""
@@ -250,7 +266,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             hadError = true
                             _askCyanAnswer.value = AskCyanAnswerState.Error(result.message)
                         }
-                        else -> { /* no-op */ }
+                        else -> {}
                     }
                 }
             } catch (e: Exception) {
@@ -267,64 +283,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** HC-009 — reset Ask Cyan answer state (used by Clear button or input edits). */
     fun resetAskCyanAnswer() {
         _askCyanAnswer.value = AskCyanAnswerState.Idle
     }
 
-    // ── BLE ───────────────────────────────────────────────────────────────────
-
-    private fun observeBleState() {
-        val ble = bleManager ?: return
-        viewModelScope.launch {
-            ble.connectionState.collect { state ->
-                _uiState.value = _uiState.value.copy(connectionState = state)
-            }
-        }
-        viewModelScope.launch {
-            ble.scannedDevices.collect { devices ->
-                _uiState.value = _uiState.value.copy(scannedDevices = devices)
-            }
-        }
-        viewModelScope.launch {
-            ble.glassesStatus.collect { status ->
-                _uiState.value = _uiState.value.copy(glassesStatus = status)
-            }
-        }
-        viewModelScope.launch {
-            ble.discoveredChars.collect { chars ->
-                _uiState.value = _uiState.value.copy(discoveredChars = chars)
-            }
-        }
-        viewModelScope.launch {
-            ble.events.collect { event ->
-                event ?: return@collect
-                _uiState.value = _uiState.value.copy(lastBleEvent = event)
-                handleBleEvent(event)
-            }
-        }
-    }
-
-    private fun handleBleEvent(event: BleEvent) {
-        when (event) {
-            is BleEvent.AiPhotoRequested -> {
-                showSnackbar("📷 Analyzing with Gemini…")
-                analyzeLatestGlassesPhoto()
-            }
-            // FIX: PhotoTaken now triggers an auto-save from glasses via BLE.
-            // Previously this only showed a snackbar while the photo sat on the glasses.
-            is BleEvent.PhotoTaken -> {
-                showSnackbar("📸 Photo taken — saving from glasses…")
-                saveLatestGlassesPhoto()
-            }
-            is BleEvent.VideoStarted -> showSnackbar("🎥 Recording…")
-            is BleEvent.VideoStopped -> showSnackbar("⏹ Recording stopped")
-            is BleEvent.AudioStarted -> showSnackbar("🎙 Audio recording…")
-            is BleEvent.AudioStopped -> showSnackbar("⏹ Audio stopped")
-            is BleEvent.Error -> showSnackbar("⚠️ ${event.message}")
-            else -> {}
-        }
-    }
+    // ── BLE / media / voice / chat / gallery / gems methods kept for compile
+    // compat with dormant screens. Bodies preserved from HC-011 unchanged.
+    // None are invoked from Home + Settings.
+    // ─────────────────────────────────────────────────────────────────────────
 
     fun startScan() = bleManager?.startScan()
     fun stopScan() = bleManager?.stopScan()
@@ -351,28 +317,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         bleManager?.updateConnectionState(connected)
     }
 
-    // ── Media sync ────────────────────────────────────────────────────────────
-
-    private fun observeSyncProgress() {
-        val syncer = mediaSyncer ?: return
-        viewModelScope.launch {
-            syncer.syncProgress.collect { progress ->
-                _uiState.value = _uiState.value.copy(syncProgress = progress)
-                if (!progress.isRunning && progress.downloadedFiles > 0 && progress.error == null) {
-                    showSnackbar("✅ Synced ${progress.downloadedFiles} file(s) to Gallery")
-                    // Refresh gallery after sync completes so new photos appear immediately
-                    loadGalleryPhotos()
-                }
-            }
-        }
-    }
-
-    // ── Gallery ───────────────────────────────────────────────────────────────
-
-    /**
-     * Query MediaStore for all photos saved to DCIM/CyanGem, newest first.
-     * Called on tab open and after every sync completion.
-     */
     fun loadGalleryPhotos() {
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.value = _uiState.value.copy(isGalleryLoading = true)
@@ -397,7 +341,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("CyanGem", "Gallery query failed: ${e.message}", e)
+                Log.e("CyanGem", "Gallery query failed: ${e.message}", e)
             }
 
             withContext(Dispatchers.Main) {
@@ -409,10 +353,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Analyze a specific gallery photo URI with Gemini.
-     * Decodes URI → Bitmap then reuses the existing analyzeImageBitmap() path.
-     */
     fun analyzeGalleryPhoto(uri: Uri, customPrompt: String? = null) {
         val prompt = customPrompt ?: "Describe what you see in this photo in detail."
         viewModelScope.launch(Dispatchers.IO) {
@@ -434,99 +374,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    showSnackbar("⚠️ Could not load photo for analysis")
+                    showSnackbar("Could not load photo for analysis")
                 }
             }
         }
     }
 
-    /**
-     * FIX: syncMedia now uses BLE to fetch the latest photo from the glasses
-     * and saves it to DCIM/CyanGem in the device gallery.
-     *
-     * The previous Wi-Fi HTTP sync path is not functional for the W610, which
-     * is a BLE-only device. The Wi-Fi sync code is preserved in MediaSyncManager
-     * for future hardware that may support it.
-     */
-    fun syncMedia() {
-        val ble = bleManager ?: return
-        if (_uiState.value.connectionState != ConnectionState.CONNECTED) {
-            showSnackbar("Connect to glasses first")
-            return
-        }
-        if (_uiState.value.syncProgress.isRunning) {
-            showSnackbar("Sync already in progress")
-            return
-        }
-
-        val expectedTotal = _uiState.value.glassesStatus.photoCount.takeIf { it > 0 } ?: 0
-
-        _uiState.value = _uiState.value.copy(
-            syncProgress = com.cyangem.media.MediaSyncProgress(
-                isRunning = true,
-                totalFiles = expectedTotal,
-                downloadedFiles = 0,
-                currentFile = "Connecting to glasses…"
-            )
-        )
-
-        val savedUris = mutableListOf<android.net.Uri>()
-
-        ble.syncAllMedia { current, total, isLast, jpeg ->
-            // Fires on main thread per CyanBleManager
-            val displayTotal = total.coerceAtLeast(current)
-            _uiState.value = _uiState.value.copy(
-                syncProgress = _uiState.value.syncProgress.copy(
-                    currentFile = "Photo $current of $displayTotal…",
-                    totalFiles = displayTotal
-                )
-            )
-            viewModelScope.launch(Dispatchers.IO) {
-                val name = "cyangem_${System.currentTimeMillis()}.jpg"
-                val uri = mediaSyncer?.saveJpegToGallery(jpeg, name)
-                withContext(Dispatchers.Main) {
-                    if (uri != null) savedUris.add(uri)
-                    val progress = com.cyangem.media.MediaSyncProgress(
-                        isRunning = !isLast,
-                        totalFiles = displayTotal,
-                        downloadedFiles = current,
-                        currentFile = if (isLast) "" else "Photo $current of $displayTotal…",
-                        lastSavedUris = savedUris.toList()
-                    )
-                    _uiState.value = _uiState.value.copy(syncProgress = progress)
-                    if (isLast) {
-                        val saved = savedUris.size
-                        showSnackbar(
-                            if (saved > 0) "✅ Synced $saved photo(s) to Gallery"
-                            else "⚠️ Sync complete — no photos saved, check permissions"
-                        )
-                        loadGalleryPhotos()
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * FIX: Auto-save the latest photo from glasses to gallery after PhotoTaken event.
-     * Called automatically from handleBleEvent when the glasses confirm a photo was taken.
-     */
-    private fun saveLatestGlassesPhoto() {
-        val ble = bleManager ?: return
-        ble.fetchLatestPhoto { jpeg ->
-            if (jpeg == null || jpeg.isEmpty()) return@fetchLatestPhoto
-            viewModelScope.launch(Dispatchers.IO) {
-                val uri = mediaSyncer?.saveJpegToGallery(jpeg)
-                withContext(Dispatchers.Main) {
-                    if (uri != null) {
-                        showSnackbar("✅ Photo saved to Gallery")
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Gemini chat ───────────────────────────────────────────────────────────
+    fun syncMedia() { /* dormant */ }
 
     fun sendMessage(text: String) {
         val engine = activeEngine ?: run {
@@ -575,98 +429,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * FIX: analyzeLatestGlassesPhoto now fetches the photo over BLE instead of Wi-Fi.
-     *
-     * The previous implementation called mediaSyncer.downloadLatestPhoto() which
-     * tried to HTTP GET from a Wi-Fi IP — never reachable on BLE-only glasses.
-     *
-     * Now: bleManager.fetchLatestPhoto() → JPEG bytes arrive via BLE callback
-     *   → decode to Bitmap → send to Gemini for analysis.
-     */
     fun analyzeLatestGlassesPhoto(customPrompt: String? = null) {
-        val engine = activeEngine ?: run {
-            showSnackbar("Add an API key in Settings first")
-            return
-        }
-        val ble = bleManager ?: return
-
-        val prompt = customPrompt ?: GeminiEngine.DEFAULT_IMAGE_PROMPT
-        val userMsg = ChatMessage(role = "user", text = "📷 [Photo from glasses] $prompt")
-        _uiState.value = _uiState.value.copy(
-            chatMessages = _uiState.value.chatMessages + userMsg,
-            isGeminiThinking = true
-        )
-        showSnackbar("📡 Fetching photo from glasses via BLE…")
-
-        ble.fetchLatestPhoto { jpeg ->
-            if (jpeg == null || jpeg.isEmpty()) {
-                _uiState.value = _uiState.value.copy(
-                    isGeminiThinking = false,
-                    geminiError = "Could not retrieve photo from glasses — make sure a photo has been taken"
-                )
-                return@fetchLatestPhoto
-            }
-            val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
-            if (bitmap == null) {
-                _uiState.value = _uiState.value.copy(
-                    isGeminiThinking = false,
-                    geminiError = "Photo data from glasses was invalid"
-                )
-                return@fetchLatestPhoto
-            }
-            viewModelScope.launch {
-                val result = when (engine) { is OpenRouterEngine -> engine.analyzeImage(bitmap, prompt); is GeminiEngine -> engine.analyzeImage(bitmap, prompt); else -> GeminiResult.Error("No engine") }; when (result) {
-                    is GeminiResult.Success -> {
-                        val modelMsg = ChatMessage(role = "model", text = result.text)
-                        _uiState.value = _uiState.value.copy(
-                            chatMessages = _uiState.value.chatMessages + modelMsg,
-                            isGeminiThinking = false
-                        )
-                        voiceEngine?.speak(result.text)
-                    }
-                    is GeminiResult.Error -> {
-                        _uiState.value = _uiState.value.copy(
-                            isGeminiThinking = false,
-                            geminiError = result.message
-                        )
-                    }
-                    else -> {}
-                }
-            }
-        }
+        // Dormant — preserved for compile compat with dormant ChatScreen.
+        showSnackbar("Photo bridge not available yet")
     }
 
-    // ── Voice ─────────────────────────────────────────────────────────────────
-
-    private fun initVoice() {
-        val voice = voiceEngine ?: return
-        voice.onWakeWord = { startVoiceQuery() }
-        voice.onResult = { text ->
-            _uiState.value = _uiState.value.copy(isListening = false)
-            sendMessage(text)
-            observeAndSpeakNextResponse()
-        }
-        viewModelScope.launch {
-            voice.voiceState.collect { state ->
-                _uiState.value = _uiState.value.copy(
-                    voiceState = state,
-                    isListening = state is VoiceState.Listening
-                )
-            }
-        }
-    }
-
-    fun startVoiceQuery() {
-        if (activeEngine == null) {
-            showSnackbar("Add an API key in Settings first")
-            return
-        }
-        voiceEngine?.startListening()
-        showSnackbar("🎙 Listening…")
-    }
-
-    fun stopVoiceQuery() = voiceEngine?.stopListening()
+    fun startVoiceQuery() { /* dormant */ }
+    fun stopVoiceQuery() { /* dormant */ }
 
     fun updateQueryStrategy() {
         val strategy = wifiManager?.getQueryStrategy() ?: QueryStrategy.USE_PHONE_CAMERA
@@ -674,22 +443,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun whatAmILookingAt(capturePhoneCamera: (() -> Bitmap?)? = null) {
-        updateQueryStrategy()
-        when (_uiState.value.queryStrategy) {
-            QueryStrategy.USE_PHONE_CAMERA -> {
-                val bitmap = capturePhoneCamera?.invoke()
-                if (bitmap != null) {
-                    analyzeImageBitmap(bitmap, "What am I looking at? Describe briefly.")
-                } else {
-                    showSnackbar("📷 Point your phone camera and try again")
-                    analyzeLatestGlassesPhoto("What am I looking at? Describe briefly.")
-                }
-            }
-            QueryStrategy.USE_GLASSES_WIFI -> {
-                showSnackbar("📡 Fetching from glasses…")
-                analyzeLatestGlassesPhoto("What am I looking at? Describe briefly.")
-            }
-        }
+        // Dormant.
+        showSnackbar("Photo bridge not available yet")
     }
 
     fun analyzeImageBitmap(bitmap: Bitmap, prompt: String = "What am I looking at?") {
@@ -698,14 +453,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val userMsg = ChatMessage(role = "user", text = "📷 $prompt")
         _uiState.value = _uiState.value.copy(chatMessages = _uiState.value.chatMessages + userMsg)
         viewModelScope.launch {
-            val result = when (engine) { is OpenRouterEngine -> engine.analyzeImage(bitmap, prompt); is GeminiEngine -> engine.analyzeImage(bitmap, prompt); else -> GeminiResult.Error("No engine") }; when (result) {
+            val result = when (engine) {
+                is OpenRouterEngine -> engine.analyzeImage(bitmap, prompt)
+                is GeminiEngine -> engine.analyzeImage(bitmap, prompt)
+                else -> GeminiResult.Error("No engine")
+            }
+            when (result) {
                 is GeminiResult.Success -> {
                     val modelMsg = ChatMessage(role = "model", text = result.text)
                     _uiState.value = _uiState.value.copy(
                         chatMessages = _uiState.value.chatMessages + modelMsg,
                         isGeminiThinking = false
                     )
-                    voiceEngine?.speak(result.text)
                 }
                 is GeminiResult.Error -> {
                     _uiState.value = _uiState.value.copy(
@@ -718,32 +477,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun observeAndSpeakNextResponse() {
-        viewModelScope.launch {
-            val before = _uiState.value.chatMessages.size
-            var waited = 0
-            while (waited < 30) {
-                kotlinx.coroutines.delay(500)
-                waited++
-                val msgs = _uiState.value.chatMessages
-                if (msgs.size > before && msgs.last().role == "model") {
-                    voiceEngine?.speak(msgs.last().text)
-                    break
-                }
-            }
-        }
-    }
-
     fun clearChat() {
         _uiState.value = _uiState.value.copy(
             chatMessages = emptyList(),
             geminiError = null,
             streamingText = ""
         )
-        initGemini()
     }
-
-    // ── Gems ──────────────────────────────────────────────────────────────────
 
     fun refreshGems() {
         val repo = gemsRepo ?: return
@@ -773,19 +513,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshGems()
     }
 
-    // ── UI helpers ────────────────────────────────────────────────────────────
-
-    fun showSnackbar(message: String) {
-        _uiState.value = _uiState.value.copy(snackbarMessage = message)
-    }
-
-    fun clearSnackbar() {
-        _uiState.value = _uiState.value.copy(snackbarMessage = null)
-    }
-
     override fun onCleared() {
-        runCatching { voiceEngine?.destroy() }
-        runCatching { bleManager?.close() }
+        // HC-013 — INTENTIONALLY DOES NOT access voiceEngine or bleManager.
+        // Both are `by lazy`; touching them here would TRIGGER construction
+        // at shutdown just to destroy them, which defeats the no-eager-init
+        // goal of HC-013. If they were never accessed during the session
+        // (the expected path for the Home shell), there's nothing to clean
+        // up. If a future code path re-introduces direct access, cleanup
+        // wiring should move next to the access site, not here.
         super.onCleared()
     }
 }
