@@ -26,6 +26,14 @@ import com.cyangem.data.ApiKeyStore
 import com.cyangem.gemini.GeminiEngine
 import com.cyangem.ui.theme.*
 import com.cyangem.viewmodel.MainViewModel
+// HC-006: ChatGPT handoff imports
+import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun SettingsScreen(vm: MainViewModel) {
@@ -269,6 +277,11 @@ fun SettingsScreen(vm: MainViewModel) {
             BleProtocolCard()
         }
 
+        // ── Debug & Diagnostics ────────────────────────────────────────────────
+        SettingsSection("Debug & Diagnostics") {
+            ChatGptHandoffCard(vm)
+        }
+
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -372,4 +385,123 @@ private fun SettingsRow(
         }
         trailing?.invoke()
     }
+}
+
+// =============================================================================
+// HC-006 — ChatGPT Android app handoff test
+// Sends a hardcoded test prompt to the official ChatGPT Android app via
+// Intent.ACTION_SEND. Falls back to the system share sheet, then to clipboard.
+// No API calls. No stored credentials. No AccessibilityService.
+// =============================================================================
+
+@Composable
+private fun ChatGptHandoffCard(vm: MainViewModel) {
+    val context = LocalContext.current
+    val isInstalled = remember { isChatGptInstalled(context) }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        color = SurfaceElevated,
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "ChatGPT Handoff Test",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = OnSurface
+            )
+            Text(
+                "Sends a fixed test prompt to the installed ChatGPT app. " +
+                "No API key required. ChatGPT will open with the prompt prefilled — " +
+                "you may need to tap Send inside ChatGPT.",
+                fontSize = 11.sp,
+                color = OnSurfaceMuted
+            )
+            Text(
+                if (isInstalled) "ChatGPT app: detected" else "ChatGPT app: not detected",
+                fontSize = 11.sp,
+                color = if (isInstalled) SuccessColor else Color(0xFFFFB300),
+                fontWeight = FontWeight.Medium
+            )
+            Button(
+                onClick = { shareToChatGpt(context, vm) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = CyanPrimary,
+                    contentColor = Color(0xFF003731)
+                )
+            ) {
+                Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Test ChatGPT Handoff", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+private const val HC006_TEST_PROMPT =
+    "Hello ChatGPT. This is a CyanGem2 handoff test from Juan's smart glasses app. " +
+    "If you can see this, the app-to-ChatGPT handoff works."
+
+private const val HC006_CHATGPT_PACKAGE = "com.openai.chatgpt"
+
+private fun isChatGptInstalled(context: Context): Boolean = try {
+    context.packageManager.getApplicationInfo(HC006_CHATGPT_PACKAGE, 0)
+    true
+} catch (e: PackageManager.NameNotFoundException) {
+    false
+}
+
+private fun shareToChatGpt(context: Context, vm: MainViewModel) {
+    val installed = isChatGptInstalled(context)
+
+    // If ChatGPT is not installed at all, skip both intent attempts and copy.
+    if (!installed) {
+        copyToClipboard(context, HC006_TEST_PROMPT)
+        vm.showSnackbar("ChatGPT not found. Prompt copied.")
+        return
+    }
+
+    // Step 1 — directly target ChatGPT package.
+    val targeted = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, HC006_TEST_PROMPT)
+        setPackage(HC006_CHATGPT_PACKAGE)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    try {
+        context.startActivity(targeted)
+        vm.showSnackbar("Opening ChatGPT…")
+        return
+    } catch (e: ActivityNotFoundException) {
+        // Targeted launch failed — fall through to the share sheet.
+    }
+
+    // Step 2 — Android share sheet (chooser).
+    val chooser = Intent.createChooser(
+        Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, HC006_TEST_PROMPT)
+        },
+        "Send to ChatGPT"
+    ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+    try {
+        context.startActivity(chooser)
+        vm.showSnackbar("Opening ChatGPT…")
+        return
+    } catch (e: ActivityNotFoundException) {
+        // Both attempts failed — clipboard fallback.
+    }
+
+    // Step 3 — clipboard.
+    copyToClipboard(context, HC006_TEST_PROMPT)
+    vm.showSnackbar("Share failed. Prompt copied.")
+}
+
+private fun copyToClipboard(context: Context, text: String) {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    cm.setPrimaryClip(ClipData.newPlainText("CyanGem2 handoff", text))
 }
