@@ -20,22 +20,27 @@ import androidx.navigation.compose.rememberNavController
 import com.cyangem.viewmodel.MainViewModel
 
 // =============================================================================
-// HC-014 — Runtime shell. Four tabs only:
+// HC-018 — Runtime shell. FOUR tabs only, per the technical fix-forward doc:
 //
-//   1. Home      → HomeScreen (5-card dashboard)
-//   2. Glasses   → GlassesScreen (placeholder per spec)
-//   3. Gallery   → GalleryScreen (placeholder per spec)
-//   4. Settings  → SettingsScreen (Connection Tips, Protocol Notes, Diagnostics)
+//   1. Home      → HomeScreen (5 cards: Gemini guide, HeyCyan launch,
+//                  BT status, Capture Check, Truth/Limitations)
+//   2. Glasses   → GlassesScreen (hardware control map: A1/A2/touchpad/lights,
+//                  guided button test, troubleshooting)
+//   3. Gallery   → GalleryScreen (MediaStore + Photo Picker)
+//   4. Settings  → SettingsScreen (package + permission status, debug, about)
 //
-// Legacy AI/chat tabs intentionally NOT registered:
-//   - Chat (ChatScreen.kt remains in codebase, dormant)
-//   - Ask Cyan (AskCyanScreen.kt remains, dormant)
-//   - Gems (GemsScreen.kt remains, dormant)
-//   - In-App Answers (Settings card removed in HC-013)
-//   - OpenRouter / Kimi / direct API: engine files remain in codebase, never invoked
+// HC-017's gemini_frame route is REMOVED. The in-frame Gemini Live scaffold
+// is now a spike document under Design_Arch/spikes/ — not main app code.
+// The HC-017 GeminiFrameScreen.kt + GeminiSession.kt + GeminiConfig.kt +
+// GeminiSessionAdapter.kt + GeminiSessionController.kt files remain in the
+// codebase but are unreachable at runtime (no route navigates to them).
 //
-// HC-013 safety preserved: MainViewModel still has empty init {}; no engines /
-// voice / TTS / BLE / media spin up at startup.
+// Same pattern: HC-017 HeyCyanBridge.kt + HeyCyanPackagePin.kt remain in
+// the codebase but no UI references them. The "Hard Bridge" BLE controls
+// have been removed from GlassesScreen — they were too aggressive for the
+// stable support app per the technical doc.
+//
+// MainViewModel.init {} stays empty — no eager subsystem construction.
 // =============================================================================
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
@@ -96,17 +101,7 @@ fun CyanGemApp(vm: MainViewModel = viewModel()) {
             startDestination = Screen.Home.route,
             modifier = Modifier.padding(padding)
         ) {
-            composable(Screen.Home.route) {
-                HomeScreen(
-                    onNavigateToGlasses = {
-                        navController.navigate(Screen.Glasses.route) {
-                            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    }
-                )
-            }
+            composable(Screen.Home.route)     { HomeScreen() }
             composable(Screen.Glasses.route)  { GlassesScreen() }
             composable(Screen.Gallery.route)  { GalleryScreen() }
             composable(Screen.Settings.route) { SettingsScreen() }

@@ -66,3 +66,6 @@ fun CyanGemTheme(content: @Composable () -> Unit) {
         content = content
     )
 }
+
+val SurfaceCardSubtle = Color(0xFFF1F5FA)
+val WarningAmberSoft = Color(0xFFB45309)
