@@ -1,10 +1,12 @@
 package com.cyangem.ui
 
-import androidx.compose.animation.*
-import androidx.compose.foundation.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -13,441 +15,608 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.cyangem.ble.ConnectionState
-import com.cyangem.ble.GlassesDevice
-import com.cyangem.ble.GlassesStatus
-import com.cyangem.media.MediaSyncProgress
 import com.cyangem.ui.theme.*
-import com.cyangem.viewmodel.MainViewModel
+
+// =============================================================================
+// HC-015 — Glasses / Camera screen.
+//
+// No longer a placeholder. Polished workflow screen:
+//
+//   - Header: "Glasses / Camera"
+//   - Hey Cyan glasses status card (live BT adapter status)
+//   - Native Hey Cyan app status card + primary "Open Native Hey Cyan App"
+//   - Camera Preview Test card (still future work; clearly marked)
+//   - Photo / Video Actions row (Open Hey Cyan, Open Samsung Gallery,
+//     Open Google Photos, Refresh Media Check)
+//   - Button & Wake Behavior info card
+//   - Warning banner: "No direct in-app camera bridge yet — use native
+//     Hey Cyan app for capture."
+//   - **Last Capture Visibility card** (the headline of HC-015)
+//
+// Last Capture Visibility states (all rendered with clear UX, never silent):
+//   - PermissionMissing       → "Grant Photo Access" button
+//   - Loading                 → "Checking for recent media…"
+//   - Empty                   → "No photos or videos found on this phone."
+//   - Items, no new since baseline → shows latest item + "Tap Refresh after
+//                                    the glasses click."
+//   - Items, NEW since baseline    → green ✅ "New capture detected" + item
+//   - Error                   → friendly error message + Retry
+// =============================================================================
 
 @Composable
-fun GlassesScreen(vm: MainViewModel) {
-    val uiState by vm.uiState.collectAsState()
+fun GlassesScreen() {
+    val context = LocalContext.current
+    val btStatus by rememberBluetoothStatus(context)
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        // Header
-        item {
-            Text(
-                "CyanGem",
-                style = MaterialTheme.typography.headlineLarge.copy(
-                    fontWeight = FontWeight.Bold,
-                    brush = Brush.horizontalGradient(listOf(CyanPrimary, CyanSecondary))
-                )
-            )
-            Text(
-                "Smart Glasses Control",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(4.dp))
-        }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
 
-        // Connection card
-        item {
-            ConnectionCard(
-                state = uiState.connectionState,
-                status = uiState.glassesStatus,
-                onScan = vm::startScan,
-                onDisconnect = vm::disconnect
-            )
-        }
+    // Last Capture Visibility state
+    val baselineSec = remember { mutableStateOf<Long?>(null) }
+    val queryResult = remember { mutableStateOf<MediaQueryResult?>(null) }
+    val refreshTrigger = remember { mutableIntStateOf(0) }
+    val isLoading = remember { mutableStateOf(false) }
 
-        // Quick Connect button — bypasses scan, connects directly to saved glasses
-        item {
-            QuickConnectCard(
-                mac = uiState.savedMac,
-                connectionState = uiState.connectionState,
-                onConnect = { vm.connectSavedMac() },
-                onMacChange = { vm.connectByMac(it) }
-            )
-        }
-
-        // Device list (shown during scan or if devices found)
-        if (uiState.scannedDevices.isNotEmpty() || uiState.connectionState == ConnectionState.SCANNING) {
-            item {
-                Text(
-                    "Nearby Devices",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
-                )
-            }
-            items(uiState.scannedDevices) { device ->
-                DeviceRow(device = device, onClick = { vm.connectByMac(device.address) })
-            }
-            if (uiState.scannedDevices.isEmpty() && uiState.connectionState == ConnectionState.SCANNING) {
-                item { ScanningPlaceholder() }
-            }
-        }
-
-        // Controls (only when connected)
-        if (uiState.connectionState == ConnectionState.CONNECTED) {
-            item {
-                ControlsCard(
-                    status = uiState.glassesStatus,
-                    onPhoto = vm::takePhoto,
-                    onStartVideo = vm::startVideo,
-                    onStopVideo = vm::stopVideo,
-                    onStartAudio = vm::startAudio,
-                    onStopAudio = vm::stopAudio,
-                    onRefreshBattery = vm::requestBattery
-                )
-            }
-
-            item {
-                MediaSyncCard(
-                    progress = uiState.syncProgress,
-                    onSync = vm::syncMedia
-                )
-            }
-        }
-
-        // Debug: BLE char inspector
-        if (uiState.discoveredChars.isNotEmpty()) {
-            item { BleInspectorCard(chars = uiState.discoveredChars) }
-        }
-    }
-}
-
-@Composable
-private fun ConnectionCard(
-    state: ConnectionState,
-    status: GlassesStatus,
-    onScan: () -> Unit,
-    onDisconnect: () -> Unit
-) {
-    val (stateColor, stateLabel) = when (state) {
-        ConnectionState.CONNECTED    -> Pair(SuccessColor, "Connected")
-        ConnectionState.CONNECTING   -> Pair(CyanPrimary,  "Connecting…")
-        ConnectionState.SCANNING     -> Pair(CyanSecondary,"Scanning…")
-        ConnectionState.DISCONNECTING -> Pair(ErrorColor,  "Disconnecting…")
-        else                         -> Pair(OnSurfaceMuted, "Disconnected")
+    // Re-check on resume (when the user returns from native app)
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
+        // Whatever the user chose, re-run the query so UI reflects current state.
+        refreshTrigger.intValue++
     }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(stateColor)
-                    )
-                    Text(stateLabel, fontWeight = FontWeight.Medium, color = OnSurface)
-                }
-                if (state == ConnectionState.CONNECTED && status.battery >= 0) {
-                    BatteryIndicator(level = status.battery, charging = status.isCharging)
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            if (state == ConnectionState.CONNECTED) {
-                if (status.firmwareVersion.isNotEmpty()) {
-                    Text("FW: ${status.firmwareVersion}", fontSize = 12.sp, color = OnSurfaceMuted)
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    StatusChip("📷 ${status.photoCount}", Modifier.weight(1f))
-                    StatusChip("🎥 ${status.videoCount}", Modifier.weight(1f))
-                    StatusChip("🎙 ${status.audioCount}", Modifier.weight(1f))
-                }
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = onDisconnect,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorColor)
-                ) { Text("Disconnect") }
-            } else {
-                Button(
-                    onClick = onScan,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = state == ConnectionState.IDLE || state == ConnectionState.DISCONNECTED,
-                    colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary, contentColor = Color(0xFF003731))
-                ) {
-                    if (state == ConnectionState.SCANNING) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color(0xFF003731), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Text("Scan for Glasses", fontWeight = FontWeight.Bold)
-                }
+    LaunchedEffect(refreshTrigger.intValue) {
+        isLoading.value = true
+        if (!MediaStoreQuery.hasMediaPermission(context)) {
+            queryResult.value = MediaQueryResult.PermissionMissing
+        } else {
+            val result = MediaStoreQuery.queryRecentMedia(context, limit = 10)
+            queryResult.value = result
+            if (baselineSec.value == null) {
+                baselineSec.value = System.currentTimeMillis() / 1000
             }
         }
+        isLoading.value = false
     }
-}
 
-@Composable
-private fun BatteryIndicator(level: Int, charging: Boolean) {
-    val color = when {
-        level > 50 -> SuccessColor
-        level > 20 -> Color(0xFFFFB300)
-        else       -> ErrorColor
-    }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        if (charging) Icon(Icons.Default.ElectricBolt, contentDescription = null, tint = CyanPrimary, modifier = Modifier.size(14.dp))
-        Text("$level%", color = color, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-    }
-}
-
-@Composable
-private fun StatusChip(text: String, modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier,
-        color = SurfaceElevated,
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(vertical = 6.dp)) {
-            Text(text, fontSize = 12.sp, color = OnSurfaceMuted)
-        }
-    }
-}
-
-@Composable
-private fun DeviceRow(device: GlassesDevice, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+    Box(modifier = Modifier.fillMaxSize().background(BackgroundLight)) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(top = 16.dp, bottom = 24.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(Icons.Default.BluetoothConnected, contentDescription = null, tint = CyanPrimary)
-                Column {
-                    Text(device.name, fontWeight = FontWeight.Medium, color = OnSurface)
-                    Text(device.address, fontSize = 11.sp, color = OnSurfaceMuted)
+            item { GlassesHeader() }
+            item { GlassesStatusBlock(btStatus) }
+            item { NativeHeyCyanCard(onOpenHeyCyan = {
+                val ok = openHeyCyanApp(context)
+                if (!ok) coroutineScope.launchSnackbar(
+                    snackbarHostState,
+                    "Hey Cyan app not detected. Open it from your app drawer if installed."
+                )
+            }) }
+            item { CameraPreviewTestCard() }
+            item { PhotoVideoActionsCard(
+                onOpenHeyCyan = {
+                    val ok = openHeyCyanApp(context)
+                    if (!ok) coroutineScope.launchSnackbar(snackbarHostState, "Hey Cyan app not found.")
+                },
+                onOpenSamsungGallery = {
+                    val ok = openSamsungGallery(context)
+                    if (!ok) coroutineScope.launchSnackbar(snackbarHostState, "Samsung Gallery not found.")
+                },
+                onOpenGooglePhotos = {
+                    val ok = openGooglePhotos(context)
+                    if (!ok) coroutineScope.launchSnackbar(snackbarHostState, "Google Photos not found.")
+                },
+                onRefreshMediaCheck = {
+                    refreshTrigger.intValue++
+                },
+                photosInstalled = isGooglePhotosInstalled(context),
+                galleryInstalled = isSamsungGalleryInstalled(context)
+            ) }
+            item { ButtonWakeBehaviorCard() }
+            item { NoBridgeBanner() }
+            item { LastCaptureVisibilityCard(
+                queryResult = queryResult.value,
+                isLoading = isLoading.value,
+                baselineSec = baselineSec.value,
+                onRequestPermission = {
+                    permissionLauncher.launch(MediaStoreQuery.requiredPermissions())
+                },
+                onRefresh = {
+                    refreshTrigger.intValue++
+                },
+                onResetBaseline = {
+                    baselineSec.value = System.currentTimeMillis() / 1000
+                    refreshTrigger.intValue++
                 }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("${device.rssi} dBm", fontSize = 11.sp, color = OnSurfaceMuted)
-                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = OnSurfaceMuted)
-            }
+            ) }
         }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 }
 
+// =============================================================================
+// Header
+// =============================================================================
+
 @Composable
-private fun ScanningPlaceholder() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center
+private fun GlassesHeader() {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            CircularProgressIndicator(color = CyanPrimary)
-            Text("Looking for glasses…", color = OnSurfaceMuted, fontSize = 13.sp)
+        Text(
+            "Glasses / Camera",
+            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+            color = OnSurface
+        )
+        Text(
+            "Capture, route, and verify media from your Hey Cyan glasses",
+            fontSize = 12.sp,
+            color = OnSurfaceMuted
+        )
+    }
+}
+
+// =============================================================================
+// Hey Cyan glasses status
+// =============================================================================
+
+@Composable
+private fun GlassesStatusBlock(btStatus: BtAdapterStatus) {
+    HomeCard {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                modifier = Modifier.size(40.dp).background(CyanPrimary.copy(alpha = 0.14f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Visibility, null, modifier = Modifier.size(22.dp), tint = CyanPrimary)
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Hey Cyan Glasses", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = OnSurface)
+                Text(
+                    when (btStatus) {
+                        BtAdapterStatus.On -> "Bluetooth ready — likely connected"
+                        BtAdapterStatus.Off -> "Bluetooth is off — turn it on in Settings"
+                        BtAdapterStatus.Unsupported,
+                        BtAdapterStatus.PermissionMissing -> "Status unavailable"
+                    },
+                    fontSize = 12.sp, color = OnSurfaceMuted
+                )
+            }
+            val (label, color) = when (btStatus) {
+                BtAdapterStatus.On -> "Connected" to SuccessColor
+                BtAdapterStatus.Off -> "Needs Check" to WarningAmber
+                else -> "Unknown" to OnSurfaceMuted
+            }
+            StatusPill(label, color)
         }
     }
 }
 
+// =============================================================================
+// Native Hey Cyan app
+// =============================================================================
+
 @Composable
-private fun ControlsCard(
-    status: GlassesStatus,
-    onPhoto: () -> Unit,
-    onStartVideo: () -> Unit,
-    onStopVideo: () -> Unit,
-    onStartAudio: () -> Unit,
-    onStopAudio: () -> Unit,
-    onRefreshBattery: () -> Unit
+private fun NativeHeyCyanCard(onOpenHeyCyan: () -> Unit) {
+    val context = LocalContext.current
+    val installed = remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { installed.value = openHeyCyanAppIsInstalled(context) }
+
+    HomeCard {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                modifier = Modifier.size(40.dp).background(CyanPrimary.copy(alpha = 0.14f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Smartphone, null, modifier = Modifier.size(22.dp), tint = CyanPrimary)
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Native Hey Cyan App", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = OnSurface)
+                Text(
+                    if (installed.value) "Detected on this device" else "Not detected — open it from your app drawer if installed",
+                    fontSize = 12.sp, color = OnSurfaceMuted
+                )
+            }
+            if (installed.value) {
+                StatusPill("Detected", SuccessColor)
+            } else {
+                StatusPill("Check", WarningAmber)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = onOpenHeyCyan,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = CyanPrimary,
+                contentColor = Color.White
+            )
+        ) {
+            Icon(Icons.Default.OpenInNew, null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Open Native Hey Cyan App", fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+// Best-effort installed check via the existing isPackageInstalled helper.
+// Tries each Hey Cyan candidate. Returns true if any resolves.
+private fun openHeyCyanAppIsInstalled(context: android.content.Context): Boolean {
+    val candidates = listOf("com.heycyan.app", "com.heyx.heycyan", "io.heycyan.app", "com.oudmon.heycyan", "com.cyan.glasses")
+    return candidates.any { isPackageInstalled(context, it) }
+}
+
+// =============================================================================
+// Camera Preview Test
+// =============================================================================
+
+@Composable
+private fun CameraPreviewTestCard() {
+    HomeCard {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                modifier = Modifier.size(40.dp).background(CyanPrimary.copy(alpha = 0.14f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(22.dp), tint = CyanPrimary)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Camera Preview Test", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = OnSurface)
+                Text(
+                    "Live preview from the glasses camera through the native Hey Cyan app today, then later through CyanGem2.",
+                    fontSize = 11.sp, color = OnSurfaceMuted
+                )
+            }
+            StatusPill("Future", OnSurfaceMuted)
+        }
+    }
+}
+
+// =============================================================================
+// Photo / Video Actions
+// =============================================================================
+
+@Composable
+private fun PhotoVideoActionsCard(
+    onOpenHeyCyan: () -> Unit,
+    onOpenSamsungGallery: () -> Unit,
+    onOpenGooglePhotos: () -> Unit,
+    onRefreshMediaCheck: () -> Unit,
+    photosInstalled: Boolean,
+    galleryInstalled: Boolean
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Controls", fontWeight = FontWeight.SemiBold, color = OnSurface)
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ControlButton(icon = Icons.Default.PhotoCamera, label = "Photo",
-                    onClick = onPhoto, modifier = Modifier.weight(1f))
-                ControlButton(
-                    icon = if (status.isRecordingVideo) Icons.Default.StopCircle else Icons.Default.Videocam,
-                    label = if (status.isRecordingVideo) "Stop" else "Video",
-                    onClick = if (status.isRecordingVideo) onStopVideo else onStartVideo,
-                    tint = if (status.isRecordingVideo) ErrorColor else CyanPrimary,
-                    modifier = Modifier.weight(1f)
-                )
-                ControlButton(
-                    icon = if (status.isRecordingAudio) Icons.Default.StopCircle else Icons.Default.Mic,
-                    label = if (status.isRecordingAudio) "Stop" else "Audio",
-                    onClick = if (status.isRecordingAudio) onStopAudio else onStartAudio,
-                    tint = if (status.isRecordingAudio) ErrorColor else CyanPrimary,
-                    modifier = Modifier.weight(1f)
-                )
-                ControlButton(icon = Icons.Default.BatteryFull, label = "Battery",
-                    onClick = onRefreshBattery, modifier = Modifier.weight(1f))
-            }
+    HomeCard {
+        Text("Photo / Video Actions", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = OnSurface)
+        Spacer(Modifier.height(10.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ActionTile(Icons.Default.Smartphone, "Open Hey Cyan", Modifier.weight(1f), enabled = true, onClick = onOpenHeyCyan)
+            ActionTile(Icons.Default.PhotoLibrary, "Open Samsung Gallery", Modifier.weight(1f), enabled = galleryInstalled, onClick = onOpenSamsungGallery)
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ActionTile(Icons.Default.Image, "Open Google Photos", Modifier.weight(1f), enabled = photosInstalled, onClick = onOpenGooglePhotos)
+            ActionTile(Icons.Default.Refresh, "Refresh Media Check", Modifier.weight(1f), enabled = true, onClick = onRefreshMediaCheck)
         }
     }
 }
 
 @Composable
-private fun ControlButton(
+private fun ActionTile(
     icon: ImageVector,
     label: String,
-    onClick: () -> Unit,
-    tint: Color = CyanPrimary,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean,
+    onClick: () -> Unit
 ) {
+    val bg = if (enabled) SurfaceTint else SurfaceElevated
+    val tint = if (enabled) CyanPrimary else OnSurfaceMuted
+    val text = if (enabled) OnSurface else OnSurfaceMuted
     Surface(
-        onClick = onClick,
-        modifier = modifier,
-        color = SurfaceElevated,
-        shape = RoundedCornerShape(12.dp)
+        modifier = if (enabled) modifier.clickable(onClick = onClick) else modifier,
+        color = bg,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, BorderSubtle)
     ) {
         Column(
-            modifier = Modifier.padding(vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp, horizontal = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
-            Text(label, fontSize = 11.sp, color = OnSurfaceMuted)
+            Icon(icon, null, modifier = Modifier.size(20.dp), tint = tint)
+            Text(label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = text)
         }
     }
 }
 
+// =============================================================================
+// Button & Wake Behavior
+// =============================================================================
+
 @Composable
-private fun MediaSyncCard(progress: MediaSyncProgress, onSync: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-        shape = RoundedCornerShape(16.dp)
+private fun ButtonWakeBehaviorCard() {
+    HomeCard {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(Icons.Default.TouchApp, null, modifier = Modifier.size(18.dp), tint = CyanPrimary)
+            Text("Button & Wake Behavior", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = OnSurface)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "The Hey Cyan glasses' physical button captures locally. The native Hey Cyan app receives the capture and transfers it to the phone over its own pairing.",
+            fontSize = 12.sp, color = OnSurface
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Wake-word and direct Gemini-from-glasses are not yet confirmed. CyanGem2 does not intercept hardware buttons on the glasses.",
+            fontSize = 11.sp, color = OnSurfaceMuted
+        )
+    }
+}
+
+// =============================================================================
+// Warning banner
+// =============================================================================
+
+@Composable
+private fun NoBridgeBanner() {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        color = WarningAmber.copy(alpha = 0.10f),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, WarningAmber.copy(alpha = 0.30f))
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Media Sync", fontWeight = FontWeight.SemiBold, color = OnSurface)
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(Icons.Default.Warning, null, modifier = Modifier.size(20.dp), tint = WarningAmber)
             Text(
-                "Syncs photos via Bluetooth — keep glasses nearby during transfer.",
-                fontSize = 12.sp, color = OnSurfaceMuted
+                "No direct in-app camera bridge yet — use the native Hey Cyan app for capture.",
+                fontSize = 12.sp, color = OnSurface, modifier = Modifier.weight(1f)
             )
-
-            AnimatedVisibility(visible = progress.isRunning) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    LinearProgressIndicator(
-                        progress = { if (progress.totalFiles > 0) progress.downloadedFiles.toFloat() / progress.totalFiles else 0f },
-                        modifier = Modifier.fillMaxWidth(),
-                        color = CyanPrimary
-                    )
-                    Text(
-                        "Downloading ${progress.currentFile}… (${progress.downloadedFiles}/${progress.totalFiles})",
-                        fontSize = 11.sp, color = OnSurfaceMuted
-                    )
-                }
-            }
-
-            progress.error?.let {
-                Text("⚠️ $it", fontSize = 12.sp, color = ErrorColor)
-            }
-
-            Button(
-                onClick = onSync,
-                enabled = !progress.isRunning,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = CyanSecondary)
-            ) {
-                Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(if (progress.isRunning) "Syncing…" else "Sync Media to Gallery")
-            }
         }
     }
 }
 
+// =============================================================================
+// LAST CAPTURE VISIBILITY  (the HC-015 headline)
+// =============================================================================
+
 @Composable
-private fun QuickConnectCard(
-    mac: String,
-    connectionState: ConnectionState,
-    onConnect: () -> Unit,
-    onMacChange: (String) -> Unit
+private fun LastCaptureVisibilityCard(
+    queryResult: MediaQueryResult?,
+    isLoading: Boolean,
+    baselineSec: Long?,
+    onRequestPermission: () -> Unit,
+    onRefresh: () -> Unit,
+    onResetBaseline: () -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Quick Connect", fontWeight = FontWeight.SemiBold, color = OnSurface)
-            Text("Saved glasses MAC — tap to connect instantly without scanning",
-                fontSize = 12.sp, color = OnSurfaceMuted)
-            Text(mac, fontSize = 12.sp, color = CyanPrimary,
-                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
-            Button(
-                onClick = onConnect,
-                enabled = connectionState == ConnectionState.IDLE ||
-                          connectionState == ConnectionState.DISCONNECTED,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = CyanPrimary,
-                    contentColor = androidx.compose.ui.graphics.Color(0xFF003731)
+    HomeCard(borderColor = CyanPrimary.copy(alpha = 0.40f)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(Icons.Default.Visibility, null, modifier = Modifier.size(18.dp), tint = CyanPrimary)
+            Text(
+                "Last Capture Visibility",
+                fontSize = 14.sp, fontWeight = FontWeight.Bold, color = OnSurface,
+                modifier = Modifier.weight(1f)
+            )
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = CyanPrimary
                 )
-            ) {
-                Text("Connect to W630_7B3B", fontWeight = FontWeight.Bold)
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Did the glasses photo or video actually land on the phone? Tap Refresh after the glasses click.",
+            fontSize = 11.sp, color = OnSurfaceMuted
+        )
+        Spacer(Modifier.height(10.dp))
+
+        when (val r = queryResult) {
+            null -> {
+                Text("Loading…", fontSize = 12.sp, color = OnSurfaceMuted)
+            }
+
+            is MediaQueryResult.PermissionMissing -> {
+                PermissionMissingBlock(onRequestPermission)
+            }
+
+            is MediaQueryResult.Empty -> {
+                EmptyMediaBlock(onRefresh)
+            }
+
+            is MediaQueryResult.Error -> {
+                ErrorBlock(detail = r.message, onRetry = onRefresh)
+            }
+
+            is MediaQueryResult.Items -> {
+                val newest = r.list.first()
+                val isNewSinceBaseline = baselineSec != null && newest.dateAddedSeconds > baselineSec
+                ItemsBlock(
+                    newest = newest,
+                    isNewSinceBaseline = isNewSinceBaseline,
+                    baselineSec = baselineSec,
+                    onRefresh = onRefresh,
+                    onResetBaseline = onResetBaseline
+                )
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun BleInspectorCard(chars: Map<String, List<String>>) {
-    var expanded by remember { mutableStateOf(false) }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-        shape = RoundedCornerShape(16.dp),
-        onClick = { expanded = !expanded }
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+private fun PermissionMissingBlock(onRequestPermission: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = WarningAmber.copy(alpha = 0.10f),
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, WarningAmber.copy(alpha = 0.30f))
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier.padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("🔍 BLE Inspector", fontWeight = FontWeight.Medium, color = OnSurfaceMuted, fontSize = 13.sp)
-                Icon(
-                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = null, tint = OnSurfaceMuted
+                Icon(Icons.Default.Lock, null, modifier = Modifier.size(18.dp), tint = WarningAmber)
+                Text(
+                    "Photo access is required to detect new captures.",
+                    fontSize = 12.sp, color = OnSurface, modifier = Modifier.weight(1f)
                 )
             }
-            AnimatedVisibility(visible = expanded) {
-                Column(modifier = Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    chars.forEach { (svcUuid, charList) ->
-                        Text("Service: $svcUuid", fontSize = 10.sp, color = CyanSecondary)
-                        charList.forEach { charDesc ->
-                            Text("  └ $charDesc", fontSize = 10.sp, color = OnSurfaceMuted)
-                        }
-                    }
-                }
+        }
+        Button(
+            onClick = onRequestPermission,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary, contentColor = Color.White)
+        ) {
+            Icon(Icons.Default.LockOpen, null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Grant Photo Access", fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun EmptyMediaBlock(onRefresh: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "No photos or videos found on this phone yet.",
+            fontSize = 13.sp, color = OnSurface
+        )
+        Text(
+            "When the glasses capture and the native Hey Cyan app transfers a file to the phone, it should appear here.",
+            fontSize = 11.sp, color = OnSurfaceMuted
+        )
+        OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Refresh")
+        }
+    }
+}
+
+@Composable
+private fun ErrorBlock(detail: String, onRetry: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = ErrorColor.copy(alpha = 0.08f),
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, ErrorColor.copy(alpha = 0.30f))
+        ) {
+            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Could not read media.", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ErrorColor)
+                Text(detail, fontSize = 11.sp, color = OnSurfaceMuted)
             }
         }
+        OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Retry")
+        }
+    }
+}
+
+@Composable
+private fun ItemsBlock(
+    newest: RecentMedia,
+    isNewSinceBaseline: Boolean,
+    baselineSec: Long?,
+    onRefresh: () -> Unit,
+    onResetBaseline: () -> Unit
+) {
+    val statusColor = if (isNewSinceBaseline) SuccessColor else OnSurfaceMuted
+    val statusLabel = if (isNewSinceBaseline) "New capture detected" else "Already seen"
+    val statusIcon = if (isNewSinceBaseline) Icons.Default.CheckCircle else Icons.Default.History
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = statusColor.copy(alpha = 0.10f),
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, statusColor.copy(alpha = 0.30f))
+        ) {
+            Row(
+                modifier = Modifier.padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(statusIcon, null, modifier = Modifier.size(18.dp), tint = statusColor)
+                Text(statusLabel, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = statusColor, modifier = Modifier.weight(1f))
+            }
+        }
+
+        // Newest item details
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                "Latest media on phone",
+                fontSize = 11.sp, color = OnSurfaceMuted, fontWeight = FontWeight.Bold
+            )
+            Text(
+                newest.displayName ?: "(unnamed)",
+                fontSize = 12.sp, color = OnSurface
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MetaPill(if (newest.type == MediaType.Image) "Image" else "Video")
+                MetaPill(formatMediaTimestamp(newest.dateAddedSeconds))
+                newest.mimeType?.let { MetaPill(it) }
+            }
+        }
+
+        if (!isNewSinceBaseline && baselineSec != null) {
+            Text(
+                "This file is from before this session. Tap Refresh after taking a photo with the glasses, or Reset Baseline to start fresh from now.",
+                fontSize = 11.sp, color = OnSurfaceMuted
+            )
+        }
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onRefresh,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary, contentColor = Color.White)
+            ) {
+                Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Refresh", fontWeight = FontWeight.Bold)
+            }
+            OutlinedButton(onClick = onResetBaseline, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.RestartAlt, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Reset Baseline")
+            }
+        }
+    }
+}
+
+@Composable
+private fun MetaPill(text: String) {
+    Surface(
+        color = SurfaceElevated,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(0.5.dp, BorderSubtle)
+    ) {
+        Text(
+            text,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            fontSize = 10.sp,
+            color = OnSurface
+        )
     }
 }

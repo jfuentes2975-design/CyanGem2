@@ -1,11 +1,14 @@
 package com.cyangem.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -16,159 +19,69 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cyangem.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 // =============================================================================
-// HC-013 — HomeScreen: stable Gemini Live support/control dashboard.
+// HC-015 — Home dashboard, light theme.
 //
-// Five sections per spec:
-//   1. Gemini Live Daily Mode  — numbered usage steps
-//   2. Confirmed Working       — status grid (works / flaky / not confirmed)
-//   3. Shortcuts               — Open Gemini / Open Hey Cyan / Open Bluetooth
-//                                Settings / Open Camera/Gallery (placeholder)
-//   4. Camera / Video          — what works today + next goal + photo bridge
-//                                marked "Not available yet"
-//   5. Test Log                — pre-populated with confirmed test results;
-//                                user can add new entries (ephemeral)
+// Same five-card layout as HC-014 but restyled for the approved Product
+// Design palette:
+//   - White / pale-blue background
+//   - White cards with subtle borders
+//   - Cyan as primary accent (deeper than HC-014's neon)
+//   - GeminiPurple accent on the Gemini Live Daily Mode card
+//   - WarningAmber on Needs Check / amber badges
+//   - Green only on Connected / Passed pills
 //
-// No MainViewModel / engine / BLE / voice coupling. All state local. Designed
-// to be the most stable surface possible after the HC-007..HC-012 churn.
+// Layout matches HC-014:
+//   Header  → title, ConnectionChip, battery/audio line
+//   Card 1  → Hey Cyan Glasses status
+//   Card 2  → Gemini Live Daily Mode (compact 6-step strip — purple accent)
+//   Card 3  → Quick Actions (2x2 tile grid)
+//   Card 4  → Recent Test Results
+//   Card 5  → Next Recommended Test (cyan accent border, primary button)
 // =============================================================================
 
 @Composable
-fun HomeScreen() {
+fun HomeScreen(onNavigateToGlasses: () -> Unit) {
     val context = LocalContext.current
     val btStatus by rememberBluetoothStatus(context)
 
-    // Test log entries seeded with the three known confirmed results from
-    // Juan's pivot brief. Kept in a mutableStateList so user-added entries
-    // stay in order (newest at top of user-added; seeded entries kept stable
-    // at bottom).
-    val seededLog = remember {
-        listOf(
-            TestLogEntry(
-                id = "seed-1",
-                text = "Test 1: Gemini Live through glasses with phone left behind — PASSED",
-                timestamp = "Confirmed",
-                outcome = TestOutcome.Passed
-            ),
-            TestLogEntry(
-                id = "seed-2",
-                text = "Test 2: Native Hey Cyan app works — PASSED",
-                timestamp = "Confirmed",
-                outcome = TestOutcome.Passed
-            ),
-            TestLogEntry(
-                id = "seed-3",
-                text = "Test 3: Photo bridge via CyanGem2 — NOT AVAILABLE YET",
-                timestamp = "Future",
-                outcome = TestOutcome.Pending
-            )
-        )
-    }
-    val userLog = remember { mutableStateListOf<TestLogEntry>() }
-    var newEntryText by remember { mutableStateOf("") }
-
-    val snackbarHostState = remember { SnackbarHostState() }
+    val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(0.dp)
+    // LazyColumn item indices for animateScrollToItem.
+    val INDEX_CARD_RECENT = 4
+
+    Box(modifier = Modifier.fillMaxSize().background(BackgroundLight)) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(top = 16.dp, bottom = 24.dp)
         ) {
-            // ── Header ────────────────────────────────────────────────────
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "Hey Cyan",
-                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-                color = OnSurface,
-                modifier = Modifier.padding(horizontal = 16.dp)
-            )
-            Text(
-                "Gemini Live + Hey Cyan glasses — companion controls",
-                fontSize = 12.sp,
-                color = OnSurfaceMuted,
-                modifier = Modifier.padding(horizontal = 16.dp)
-            )
-            // Live BT chip in the header so it's always visible
-            Spacer(Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    Icons.Default.Bluetooth,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = OnSurfaceMuted
-                )
-                Text(
-                    btStatus.displayLabel(),
-                    fontSize = 11.sp,
-                    color = OnSurfaceMuted
-                )
-            }
-            Spacer(Modifier.height(16.dp))
-
-            // ── 1. Gemini Live Daily Mode ────────────────────────────────
-            HomeSection("Gemini Live Daily Mode") {
-                NumberedStepsCard(
-                    steps = listOf(
-                        "Connect Hey Cyan glasses (OS Bluetooth)",
-                        "Open Gemini",
-                        "Start Gemini Live",
-                        "Confirm audio is coming through the glasses",
-                        "Put the phone nearby or in your pocket",
-                        "Talk naturally — Gemini Live hears you through the glasses mic"
-                    )
-                )
-            }
-
-            // ── 2. Confirmed Working ─────────────────────────────────────
-            HomeSection("Confirmed Working") {
-                StatusGridCard(
-                    items = listOf(
-                        StatusItem("Bluetooth connection", StatusState.Works),
-                        StatusItem("Music", StatusState.Works),
-                        StatusItem("Calls", StatusState.Works),
-                        StatusItem("Gemini Live audio", StatusState.Works),
-                        StatusItem("Gemini Live hears through glasses mic", StatusState.Works),
-                        StatusItem("Range / background test", StatusState.Works),
-                        StatusItem("Volume controls", StatusState.Works),
-                        StatusItem("Pause / play", StatusState.Flaky),
-                        StatusItem("Direct Gemini wake from glasses", StatusState.NotConfirmed)
-                    )
-                )
-            }
-
-            // ── 3. Shortcuts ─────────────────────────────────────────────
-            HomeSection("Shortcuts") {
-                ShortcutsCard(
+            item { HomeHeader(btStatus) }
+            item { GlassesStatusCard(btStatus) }
+            item { DailyModeCard() }
+            item {
+                QuickActionsCard(
                     onOpenGemini = {
                         val ok = openGeminiApp(context)
                         if (!ok) coroutineScope.launchSnackbar(
                             snackbarHostState,
-                            "Could not open Gemini. Check the Gemini or Google app is installed."
+                            "Could not open Gemini. Check the Gemini or Google app."
                         )
                     },
                     onOpenHeyCyan = {
                         val ok = openHeyCyanApp(context)
                         if (!ok) coroutineScope.launchSnackbar(
                             snackbarHostState,
-                            "Hey Cyan app not detected. Open it from your app drawer if it's installed."
+                            "Hey Cyan app not detected. Open it from your app drawer if installed."
                         )
                     },
                     onOpenBluetoothSettings = {
@@ -177,42 +90,16 @@ fun HomeScreen() {
                             snackbarHostState,
                             "Could not open Bluetooth settings."
                         )
+                    },
+                    onTestLog = {
+                        coroutineScope.launch {
+                            listState.animateScrollToItem(INDEX_CARD_RECENT)
+                        }
                     }
                 )
             }
-
-            // ── 4. Camera / Video ────────────────────────────────────────
-            HomeSection("Camera / Video") {
-                CameraVideoCard()
-            }
-
-            // ── 5. Test Log ─────────────────────────────────────────────
-            HomeSection("Test Log") {
-                TestLogCard(
-                    seededEntries = seededLog,
-                    userEntries = userLog,
-                    newEntryText = newEntryText,
-                    onNewEntryTextChange = { newEntryText = it },
-                    onAdd = {
-                        val text = newEntryText.trim()
-                        if (text.isNotEmpty()) {
-                            userLog.add(
-                                0,
-                                TestLogEntry(
-                                    id = "user-${System.currentTimeMillis()}",
-                                    text = text,
-                                    timestamp = currentTimestamp(),
-                                    outcome = TestOutcome.Note
-                                )
-                            )
-                            newEntryText = ""
-                        }
-                    },
-                    onClearUserEntries = { userLog.clear() }
-                )
-            }
-
-            Spacer(Modifier.height(24.dp))
+            item { RecentTestResultsCard() }
+            item { NextRecommendedTestCard(onGoToGlasses = onNavigateToGlasses) }
         }
 
         SnackbarHost(
@@ -223,315 +110,343 @@ fun HomeScreen() {
 }
 
 // =============================================================================
-// Subcomponents
+// Header
 // =============================================================================
 
 @Composable
-private fun HomeSection(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(modifier = Modifier.padding(bottom = 4.dp)) {
+private fun HomeHeader(btStatus: BtAdapterStatus) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Home",
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                color = OnSurface,
+                modifier = Modifier.weight(1f)
+            )
+            ConnectionChip(btStatus)
+        }
         Text(
-            title.uppercase(),
+            "Battery: — • Audio: check OS media output for Hey Cyan",
             fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            color = OnSurfaceMuted,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            letterSpacing = 1.sp
+            color = OnSurfaceMuted
         )
-        content()
     }
 }
 
 @Composable
-private fun NumberedStepsCard(steps: List<String>) {
+private fun ConnectionChip(btStatus: BtAdapterStatus) {
+    val (label, color) = when (btStatus) {
+        BtAdapterStatus.On -> "Connected" to SuccessColor
+        BtAdapterStatus.Off -> "Needs Check" to WarningAmber
+        BtAdapterStatus.Unsupported,
+        BtAdapterStatus.PermissionMissing -> "Unknown" to OnSurfaceMuted
+    }
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-        color = SurfaceElevated,
-        shape = RoundedCornerShape(12.dp)
+        color = color.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.dp, color.copy(alpha = 0.30f))
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            steps.forEachIndexed { index, step ->
-                Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Surface(
-                        color = CyanPrimary.copy(alpha = 0.18f),
-                        shape = RoundedCornerShape(50)
-                    ) {
-                        Text(
-                            "${index + 1}",
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = CyanPrimary
-                        )
-                    }
-                    Text(step, fontSize = 13.sp, color = OnSurface, modifier = Modifier.padding(top = 1.dp))
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(modifier = Modifier.size(6.dp).background(color, CircleShape))
+            Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = color)
+        }
+    }
+}
+
+// =============================================================================
+// Card 1 — Hey Cyan Glasses status
+// =============================================================================
+
+@Composable
+private fun GlassesStatusCard(btStatus: BtAdapterStatus) {
+    HomeCard {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                modifier = Modifier.size(40.dp).background(CyanPrimary.copy(alpha = 0.14f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Visibility, null, modifier = Modifier.size(22.dp), tint = CyanPrimary)
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Hey Cyan Glasses", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = OnSurface)
+                val statusText = when (btStatus) {
+                    BtAdapterStatus.On -> "Connected"
+                    BtAdapterStatus.Off -> "Check Bluetooth"
+                    BtAdapterStatus.Unsupported,
+                    BtAdapterStatus.PermissionMissing -> "Status unavailable"
                 }
+                Text(statusText, fontSize = 12.sp, color = OnSurfaceMuted)
             }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetricPill(label = "Battery", value = "—")
+            MetricPill(label = "Audio", value = if (btStatus == BtAdapterStatus.On) "To Glasses" else "Check Route")
         }
     }
 }
 
-private enum class StatusState { Works, Flaky, NotConfirmed }
-private data class StatusItem(val label: String, val state: StatusState)
-
 @Composable
-private fun StatusGridCard(items: List<StatusItem>) {
+private fun MetricPill(label: String, value: String) {
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         color = SurfaceElevated,
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(0.5.dp, BorderSubtle)
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items.forEach { item ->
-                StatusRow(item)
-            }
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text("$label:", fontSize = 11.sp, color = OnSurfaceMuted)
+            Text(value, fontSize = 11.sp, fontWeight = FontWeight.Medium, color = OnSurface)
         }
     }
 }
 
-@Composable
-private fun StatusRow(item: StatusItem) {
-    val (icon, color, badge) = when (item.state) {
-        StatusState.Works -> Triple(Icons.Default.CheckCircle, SuccessColor, "Works")
-        StatusState.Flaky -> Triple(Icons.Default.WarningAmber, Color(0xFFFFB300), "Flaky")
-        StatusState.NotConfirmed -> Triple(Icons.Default.HelpOutline, OnSurfaceMuted, "Not confirmed")
-    }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = color)
-        Text(item.label, fontSize = 13.sp, color = OnSurface, modifier = Modifier.weight(1f))
-        Surface(color = color.copy(alpha = 0.15f), shape = RoundedCornerShape(20.dp)) {
-            Text(
-                badge,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp),
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                color = color
-            )
-        }
-    }
-}
+// =============================================================================
+// Card 2 — Gemini Live Daily Mode (compact 6-step strip, GEMINI PURPLE accent)
+// =============================================================================
 
-@Composable
-private fun ShortcutsCard(
-    onOpenGemini: () -> Unit,
-    onOpenHeyCyan: () -> Unit,
-    onOpenBluetoothSettings: () -> Unit
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-        color = SurfaceElevated,
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            ShortcutButton(
-                icon = Icons.Default.GraphicEq,
-                label = "Open Gemini",
-                onClick = onOpenGemini,
-                enabled = true
-            )
-            ShortcutButton(
-                icon = Icons.Default.Smartphone,
-                label = "Open native Hey Cyan app",
-                onClick = onOpenHeyCyan,
-                enabled = true
-            )
-            ShortcutButton(
-                icon = Icons.Default.Bluetooth,
-                label = "Open Bluetooth settings",
-                onClick = onOpenBluetoothSettings,
-                enabled = true
-            )
-            ShortcutButton(
-                icon = Icons.Default.PhotoCamera,
-                label = "Open Camera / Gallery — coming later",
-                onClick = { /* disabled */ },
-                enabled = false
-            )
-        }
-    }
-}
+private data class DailyStep(val number: Int, val shortLabel: String)
 
-@Composable
-private fun ShortcutButton(
-    icon: ImageVector,
-    label: String,
-    onClick: () -> Unit,
-    enabled: Boolean
-) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = Modifier.fillMaxWidth(),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (enabled) CyanPrimary else Color(0xFF30363D),
-            contentColor = if (enabled) Color(0xFF003731) else OnSurfaceMuted,
-            disabledContainerColor = Color(0xFF30363D),
-            disabledContentColor = OnSurfaceMuted
-        )
-    ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
-        Spacer(Modifier.width(8.dp))
-        Text(label, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-private fun CameraVideoCard() {
-    Surface(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-        color = SurfaceElevated,
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(14.dp), tint = SuccessColor)
-                Text(
-                    "Native Hey Cyan app: working",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = OnSurface
-                )
-            }
-            Text(
-                "The native Hey Cyan app handles photo and video transfer from the glasses today. Use the shortcut above to launch it.",
-                fontSize = 11.sp,
-                color = OnSurfaceMuted
-            )
-            HorizontalDivider(color = Color(0xFF30363D), thickness = 0.5.dp)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(Icons.Default.HourglassEmpty, contentDescription = null, modifier = Modifier.size(14.dp), tint = CyanPrimary)
-                Text(
-                    "Next goal",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = CyanPrimary
-                )
-            }
-            Text(
-                "Test camera preview and video behavior on the glasses through the native app. Confirm photos and videos transfer to the phone gallery as expected.",
-                fontSize = 11.sp,
-                color = OnSurface
-            )
-            HorizontalDivider(color = Color(0xFF30363D), thickness = 0.5.dp)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(Icons.Default.Block, contentDescription = null, modifier = Modifier.size(14.dp), tint = OnSurfaceMuted)
-                Text(
-                    "Photo bridge in CyanGem2",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = OnSurfaceMuted
-                )
-            }
-            Text(
-                "Future feature — not available yet. CyanGem2 does not transfer photos or videos from the glasses today.",
-                fontSize = 11.sp,
-                color = OnSurfaceMuted
-            )
-        }
-    }
-}
-
-private enum class TestOutcome { Passed, Failed, Pending, Note }
-private data class TestLogEntry(
-    val id: String,
-    val text: String,
-    val timestamp: String,
-    val outcome: TestOutcome
+private val DAILY_STEPS = listOf(
+    DailyStep(1, "Pair"),
+    DailyStep(2, "Audio"),
+    DailyStep(3, "Live"),
+    DailyStep(4, "Range"),
+    DailyStep(5, "Camera"),
+    DailyStep(6, "Wrap")
 )
 
 @Composable
-private fun TestLogCard(
-    seededEntries: List<TestLogEntry>,
-    userEntries: List<TestLogEntry>,
-    newEntryText: String,
-    onNewEntryTextChange: (String) -> Unit,
-    onAdd: () -> Unit,
-    onClearUserEntries: () -> Unit
+private fun DailyModeCard() {
+    HomeCard {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(
+                modifier = Modifier.size(28.dp).background(GeminiPurple.copy(alpha = 0.14f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(16.dp), tint = GeminiPurple)
+            }
+            Text("Gemini Live Daily Mode", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = OnSurface)
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            DAILY_STEPS.forEachIndexed { index, step ->
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier.size(28.dp).background(GeminiPurple.copy(alpha = 0.14f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "${step.number}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = GeminiPurple
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        step.shortLabel,
+                        fontSize = 9.sp,
+                        color = OnSurfaceMuted,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                if (index < DAILY_STEPS.size - 1) {
+                    Box(
+                        modifier = Modifier
+                            .padding(top = 13.dp)
+                            .height(2.dp)
+                            .width(8.dp)
+                            .background(GeminiPurple.copy(alpha = 0.30f))
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Pair → Audio → Live → Range → Camera → Wrap Up",
+            fontSize = 11.sp,
+            color = OnSurfaceMuted
+        )
+    }
+}
+
+// =============================================================================
+// Card 3 — Quick Actions (2x2 tiles)
+// =============================================================================
+
+@Composable
+private fun QuickActionsCard(
+    onOpenGemini: () -> Unit,
+    onOpenHeyCyan: () -> Unit,
+    onOpenBluetoothSettings: () -> Unit,
+    onTestLog: () -> Unit
+) {
+    HomeCard {
+        Text("Quick Actions", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = OnSurface)
+        Spacer(Modifier.height(10.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            QuickActionTile(Icons.Default.GraphicEq, "Open Gemini", Modifier.weight(1f), onOpenGemini)
+            QuickActionTile(Icons.Default.Smartphone, "Open Hey Cyan", Modifier.weight(1f), onOpenHeyCyan)
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            QuickActionTile(Icons.Default.Bluetooth, "Bluetooth Settings", Modifier.weight(1f), onOpenBluetoothSettings)
+            QuickActionTile(Icons.Default.NoteAlt, "Test Log", Modifier.weight(1f), onTestLog)
+        }
+    }
+}
+
+@Composable
+private fun QuickActionTile(
+    icon: ImageVector,
+    label: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-        color = SurfaceCard,
-        shape = RoundedCornerShape(12.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, CyanPrimary.copy(alpha = 0.5f))
+        modifier = modifier.clickable { onClick() },
+        color = SurfaceTint,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, BorderSubtle)
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            // Seeded entries — always visible, in fixed order
-            seededEntries.forEach { entry -> TestLogRow(entry) }
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp, horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(icon, null, modifier = Modifier.size(22.dp), tint = CyanPrimary)
+            Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = OnSurface)
+        }
+    }
+}
 
-            HorizontalDivider(color = Color(0xFF30363D), thickness = 0.5.dp)
+// =============================================================================
+// Card 4 — Recent Test Results
+// =============================================================================
 
-            Text(
-                "Add a session note (cleared when the app is closed):",
-                fontSize = 11.sp,
-                color = OnSurfaceMuted
-            )
+private enum class ResultBadge { Passed, NotAvailable, Failed }
+private data class TestResult(val label: String, val badge: ResultBadge)
 
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = newEntryText,
-                    onValueChange = onNewEntryTextChange,
-                    placeholder = { Text("Note (e.g. tested call routing)", color = OnSurfaceMuted) },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Text,
-                        imeAction = ImeAction.Done
-                    ),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = CyanPrimary,
-                        unfocusedBorderColor = Color(0xFF30363D),
-                        focusedTextColor = OnSurface,
-                        unfocusedTextColor = OnSurface,
-                        cursorColor = CyanPrimary
-                    )
-                )
-                Button(
-                    onClick = onAdd,
-                    enabled = newEntryText.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = CyanPrimary,
-                        contentColor = Color(0xFF003731)
-                    )
-                ) { Text("Add", fontWeight = FontWeight.Bold) }
-            }
+private val SEEDED_RESULTS = listOf(
+    TestResult("Gemini Live range test", ResultBadge.Passed),
+    TestResult("Native Hey Cyan app works", ResultBadge.Passed),
+    TestResult("Photo bridge", ResultBadge.NotAvailable)
+)
 
-            if (userEntries.isNotEmpty()) {
-                userEntries.forEach { entry -> TestLogRow(entry) }
-                TextButton(onClick = onClearUserEntries) {
-                    Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Clear session notes")
-                }
+@Composable
+private fun RecentTestResultsCard() {
+    HomeCard {
+        Text("Recent Test Results", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = OnSurface)
+        Spacer(Modifier.height(10.dp))
+        SEEDED_RESULTS.forEachIndexed { i, row ->
+            TestResultRow(row)
+            if (i < SEEDED_RESULTS.size - 1) {
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider(color = BorderSubtle, thickness = 0.5.dp)
+                Spacer(Modifier.height(8.dp))
             }
         }
     }
 }
 
 @Composable
-private fun TestLogRow(entry: TestLogEntry) {
-    val (icon, color) = when (entry.outcome) {
-        TestOutcome.Passed -> Icons.Default.CheckCircle to SuccessColor
-        TestOutcome.Failed -> Icons.Default.Cancel to ErrorColor
-        TestOutcome.Pending -> Icons.Default.HourglassEmpty to OnSurfaceMuted
-        TestOutcome.Note -> Icons.Default.NoteAlt to CyanPrimary
+private fun TestResultRow(row: TestResult) {
+    val (badgeText, color) = when (row.badge) {
+        ResultBadge.Passed -> "Passed" to SuccessColor
+        ResultBadge.NotAvailable -> "Not Available" to WarningAmber
+        ResultBadge.Failed -> "Failed" to ErrorColor
     }
-    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp).padding(top = 2.dp), tint = color)
-        Column(modifier = Modifier.weight(1f)) {
-            Text(entry.text, fontSize = 12.sp, color = OnSurface)
-            Text(entry.timestamp, fontSize = 10.sp, color = OnSurfaceMuted)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(row.label, fontSize = 13.sp, color = OnSurface, modifier = Modifier.weight(1f))
+        StatusPill(badgeText, color)
+    }
+}
+
+@Composable
+internal fun StatusPill(label: String, color: Color) {
+    Surface(
+        color = color.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.dp, color.copy(alpha = 0.30f))
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            color = color
+        )
+    }
+}
+
+// =============================================================================
+// Card 5 — Next Recommended Test
+// =============================================================================
+
+@Composable
+private fun NextRecommendedTestCard(onGoToGlasses: () -> Unit) {
+    HomeCard(borderColor = CyanPrimary.copy(alpha = 0.40f)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(Icons.Default.Flag, null, modifier = Modifier.size(18.dp), tint = CyanPrimary)
+            Text("Next Recommended Test", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = OnSurface)
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Validate camera preview and capture using the native Hey Cyan app, and confirm the photo lands on the phone.",
+            fontSize = 13.sp,
+            color = OnSurface
+        )
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = onGoToGlasses,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = CyanPrimary,
+                contentColor = Color.White
+            )
+        ) {
+            Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Go to Glasses / Camera", fontWeight = FontWeight.Bold)
         }
     }
 }
 
-private fun currentTimestamp(): String {
-    val fmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-    return fmt.format(Date())
+// =============================================================================
+// Shared card chrome — used by Home AND by other screens (internal)
+// =============================================================================
+
+@Composable
+internal fun HomeCard(
+    borderColor: Color? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val baseModifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 16.dp)
+    Surface(
+        modifier = baseModifier,
+        color = SurfaceCard,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, borderColor ?: BorderSubtle)
+    ) {
+        Column(modifier = Modifier.padding(14.dp), content = content)
+    }
 }
 
-private fun CoroutineScope.launchSnackbar(
+internal fun CoroutineScope.launchSnackbar(
     host: SnackbarHostState,
     message: String
 ) {

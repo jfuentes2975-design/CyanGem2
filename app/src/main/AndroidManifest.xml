@@ -15,54 +15,77 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="30" />
 
-    <!-- Wi-Fi Direct for media sync -->
+    <!-- Wi-Fi Direct (legacy media sync; not used in HC-015 runtime) -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Media storage -->
+    <!-- Media storage — read recent images/videos for Last Capture Visibility + Gallery -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <!-- Older Android fallback (API < 33) -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
-    <!-- Microphone for voice commands -->
+    <!-- Microphone (legacy; not used in HC-015 runtime) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Internet for Gemini API -->
+    <!-- Internet (legacy; not used in HC-015 runtime) -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Keep BLE connection alive in background -->
+    <!-- Background BLE service (legacy; not invoked in HC-015 runtime) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
-    <!-- BLE feature requirement -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <!--
-        HC-013 — package visibility for the Open Gemini and Open Hey Cyan
-        buttons on Home. Android 11+ requires <queries> declarations for
+        HC-015 — package visibility. Required on Android 11+ for
         getLaunchIntentForPackage(...) to return non-null for unrelated apps.
 
-        - com.google.android.apps.bard         : Gemini standalone (was Bard)
-        - com.google.android.googlequicksearchbox : Google app (Assistant host)
-        - com.openai.chatgpt                   : ChatGPT (kept from earlier work)
-        - com.heycyan.app, com.heyx.heycyan,
-          io.heycyan.app, com.oudmon.heycyan,
-          com.cyan.glasses                      : Hey Cyan candidates
-        - android.intent.action.VOICE_COMMAND  : public action fallback for Gemini
+        New in HC-015:
+          - com.sec.android.gallery3d : Samsung Gallery launcher
+          - com.google.android.apps.photos : Google Photos launcher
+          - <intent ACTION_VIEW image/* and video/*> : Open in Gallery action
+            (resolves to whichever gallery app the user has set as default)
+
+        Carried from HC-013:
+          - com.google.android.apps.bard, ...gemini, ...googlequicksearchbox
+          - com.openai.chatgpt
+          - Hey Cyan candidates
+          - ACTION_VOICE_COMMAND fallback
     -->
     <queries>
+        <!-- Gemini -->
         <package android:name="com.google.android.apps.bard" />
+        <package android:name="com.google.android.apps.gemini" />
         <package android:name="com.google.android.googlequicksearchbox" />
+        <!-- ChatGPT (kept for compile compat only — UI removed in HC-013) -->
         <package android:name="com.openai.chatgpt" />
+        <!-- Hey Cyan candidates -->
         <package android:name="com.heycyan.app" />
         <package android:name="com.heyx.heycyan" />
         <package android:name="io.heycyan.app" />
         <package android:name="com.oudmon.heycyan" />
         <package android:name="com.cyan.glasses" />
+        <!-- HC-015: Samsung Gallery + Google Photos -->
+        <package android:name="com.sec.android.gallery3d" />
+        <package android:name="com.google.android.apps.photos" />
+
+        <!-- ACTION_VIEW for media so we can resolve the user's default gallery -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="video/*" />
+        </intent>
+        <!-- Voice assistant fallback for Open Gemini -->
         <intent>
             <action android:name="android.intent.action.VOICE_COMMAND" />
         </intent>
@@ -92,7 +115,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Background BLE service -->
         <service
             android:name=".ble.BleConnectionService"
             android:foregroundServiceType="connectedDevice"
